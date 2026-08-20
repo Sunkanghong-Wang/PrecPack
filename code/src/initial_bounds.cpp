@@ -3,6 +3,7 @@
 #include "precpack/algorithms.hpp"
 #include "precpack/bbr.hpp"
 #include "precpack/build_config.hpp"
+#include "precpack/exact_arithmetic.hpp"
 #if PRECPACK_HAS_GUROBI
 #include "precpack/column_generation.hpp"
 #endif
@@ -1422,22 +1423,6 @@ private:
            ceil_div(remaining_weight - packed_flow, instance.capacity);
 }
 
-using Int128 = __int128_t;
-
-[[nodiscard]] int ceil_nonnegative_ratio(Int128 numerator,
-                                         std::int64_t denominator) {
-    if (numerator < 0 || denominator <= 0) {
-        throw std::invalid_argument(
-            "exact DFF ratio requires nonnegative terms");
-    }
-    const Int128 quotient =
-        numerator / denominator + (numerator % denominator != 0 ? 1 : 0);
-    if (quotient > std::numeric_limits<int>::max()) {
-        throw std::overflow_error("exact DFF lower bound does not fit int");
-    }
-    return static_cast<int>(quotient);
-}
-
 template <typename WeightAt>
 [[nodiscard]] int exact_dff_lower_bound(std::size_t item_count,
                                         int capacity,
@@ -1449,37 +1434,32 @@ template <typename WeightAt>
     int lower_bound = 1;
 
     for (int parameter = 1; parameter <= 100; ++parameter) {
-        Int128 numerator_sum = 0;
+        const std::int64_t denominator =
+            static_cast<std::int64_t>(capacity) * parameter;
+        exact_arithmetic::NonnegativeRatioSum ratio(denominator);
         for (std::size_t item = 0; item < item_count; ++item) {
             const std::int64_t weight = weight_at(item);
             const std::int64_t scaled =
                 static_cast<std::int64_t>(parameter + 1) * weight;
             if (scaled % capacity == 0) {
-                numerator_sum += static_cast<Int128>(weight) * parameter;
+                ratio.add(weight * parameter);
             } else {
-                numerator_sum +=
-                    static_cast<Int128>(scaled / capacity) * capacity;
+                ratio.add((scaled / capacity) * capacity);
             }
         }
-        const std::int64_t denominator =
-            static_cast<std::int64_t>(capacity) * parameter;
-        lower_bound = std::max(
-            lower_bound,
-            ceil_nonnegative_ratio(numerator_sum, denominator));
+        lower_bound = std::max(lower_bound, ratio.ceil_to_int());
     }
 
-    Int128 numerator_sum = 0;
+    exact_arithmetic::NonnegativeRatioSum half_ratio(capacity);
     for (std::size_t item = 0; item < item_count; ++item) {
         const std::int64_t weight = weight_at(item);
         if (2 * weight > capacity) {
-            numerator_sum += capacity;
+            half_ratio.add(capacity);
         } else if (2 * weight == capacity) {
-            numerator_sum += weight;
+            half_ratio.add(weight);
         }
     }
-    lower_bound = std::max(
-        lower_bound,
-        ceil_nonnegative_ratio(numerator_sum, capacity));
+    lower_bound = std::max(lower_bound, half_ratio.ceil_to_int());
 
     for (std::size_t parameter_item = 0;
          parameter_item < item_count;
@@ -1488,18 +1468,16 @@ template <typename WeightAt>
         if (2 * parameter_weight >= capacity) {
             continue;
         }
-        numerator_sum = 0;
+        exact_arithmetic::NonnegativeRatioSum threshold_ratio(capacity);
         for (std::size_t item = 0; item < item_count; ++item) {
             const std::int64_t weight = weight_at(item);
             if (weight > capacity - parameter_weight) {
-                numerator_sum += capacity;
+                threshold_ratio.add(capacity);
             } else if (weight >= parameter_weight) {
-                numerator_sum += weight;
+                threshold_ratio.add(weight);
             }
         }
-        lower_bound = std::max(
-            lower_bound,
-            ceil_nonnegative_ratio(numerator_sum, capacity));
+        lower_bound = std::max(lower_bound, threshold_ratio.ceil_to_int());
     }
 
     for (int parameter_numerator = 1;
@@ -1509,23 +1487,23 @@ template <typename WeightAt>
             1000 / parameter_numerator;
         const std::int64_t ratio_denominator =
             static_cast<std::int64_t>(capacity) * parameter_numerator;
-        Int128 transformed_sum = 0;
+        exact_arithmetic::NonnegativeRatioSum transformed_ratio(
+            transformed_capacity);
         for (std::size_t item = 0; item < item_count; ++item) {
             const std::int64_t weight = weight_at(item);
             if (2 * weight > capacity) {
                 const std::int64_t complement_units =
                     ((static_cast<std::int64_t>(capacity) - weight) * 1000) /
                     ratio_denominator;
-                transformed_sum +=
-                    transformed_capacity - complement_units;
+                transformed_ratio.add(
+                    transformed_capacity - complement_units);
             } else if (weight * 1000 >= ratio_denominator) {
-                transformed_sum +=
-                    (weight * 1000) / ratio_denominator;
+                transformed_ratio.add(
+                    (weight * 1000) / ratio_denominator);
             }
         }
         lower_bound = std::max(
-            lower_bound,
-            ceil_nonnegative_ratio(transformed_sum, transformed_capacity));
+            lower_bound, transformed_ratio.ceil_to_int());
     }
     return lower_bound;
 }

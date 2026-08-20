@@ -1,5 +1,7 @@
 #include "precpack/column_generation.hpp"
 
+#include "precpack/exact_arithmetic.hpp"
+
 #include <gurobi_c++.h>
 
 #include <algorithm>
@@ -21,7 +23,6 @@ namespace precpack {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-using Int128 = __int128_t;
 
 struct Pattern {
     int bin = -1;
@@ -338,17 +339,25 @@ private:
 
     std::vector<std::int64_t> item_profit;
     item_profit.reserve(duals.item.size());
-    Int128 numerator = 0;
+    std::int64_t numerator = 0;
     for (const double value : duals.item) {
         const std::int64_t profit = std::max<std::int64_t>(0, scaled(value));
         item_profit.push_back(profit);
-        numerator += profit;
+        numerator = exact_arithmetic::checked_add(
+            numerator, profit, "initial BPP certificate overflow");
     }
     const std::int64_t valid_dual =
         std::max<std::int64_t>(0, scaled(duals.valid_bound));
-    numerator += static_cast<Int128>(valid_bound_rhs) * valid_dual;
+    numerator = exact_arithmetic::checked_add(
+        numerator,
+        exact_arithmetic::checked_multiply(
+            valid_bound_rhs, valid_dual,
+            "initial BPP certificate overflow"),
+        "initial BPP certificate overflow");
     for (const double value : duals.sr) {
-        numerator += std::min<std::int64_t>(0, scaled(value));
+        numerator = exact_arithmetic::checked_add(
+            numerator, std::min<std::int64_t>(0, scaled(value)),
+            "initial BPP certificate overflow");
     }
 
     std::vector<std::int64_t> dp(
@@ -358,39 +367,22 @@ private:
             instance.items[static_cast<std::size_t>(item)].weight;
         const std::int64_t profit = item_profit[static_cast<std::size_t>(item)];
         for (int capacity = instance.capacity; capacity >= weight; --capacity) {
-            const Int128 candidate =
-                static_cast<Int128>(dp[static_cast<std::size_t>(capacity - weight)]) +
-                profit;
-            if (candidate > std::numeric_limits<std::int64_t>::max()) {
-                throw std::overflow_error("initial BPP knapsack certificate overflow");
-            }
+            const std::int64_t candidate = exact_arithmetic::checked_add(
+                dp[static_cast<std::size_t>(capacity - weight)], profit,
+                "initial BPP knapsack certificate overflow");
             dp[static_cast<std::size_t>(capacity)] = std::max(
                 dp[static_cast<std::size_t>(capacity)],
-                static_cast<std::int64_t>(candidate));
+                candidate);
         }
     }
-    const Int128 maximum_column_score_wide =
-        static_cast<Int128>(valid_dual) +
-        *std::max_element(dp.begin(), dp.end());
-    if (maximum_column_score_wide >
-        std::numeric_limits<std::int64_t>::max()) {
-        throw std::overflow_error("initial BPP column-score overflow");
-    }
-    const std::int64_t maximum_column_score =
-        static_cast<std::int64_t>(maximum_column_score_wide);
+    const std::int64_t maximum_column_score = exact_arithmetic::checked_add(
+        valid_dual, *std::max_element(dp.begin(), dp.end()),
+        "initial BPP column-score overflow");
     const std::int64_t denominator =
         std::max(scale, maximum_column_score);
-    Int128 quotient = 0;
-    if (numerator >= 0) {
-        quotient = (numerator + denominator - 1) / denominator;
-    } else {
-        quotient = numerator / denominator;
-    }
-    if (quotient > std::numeric_limits<int>::max() ||
-        quotient < std::numeric_limits<int>::min()) {
-        throw std::overflow_error("initial BPP certified bound does not fit int");
-    }
-    return static_cast<int>(quotient);
+    return exact_arithmetic::ceil_ratio_to_int(
+        numerator, denominator,
+        "initial BPP certified bound does not fit int");
 }
 
 struct ConflictGraph {

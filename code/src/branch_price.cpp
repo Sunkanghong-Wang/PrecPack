@@ -1,5 +1,7 @@
 #include "precpack/branch_price.hpp"
 
+#include "precpack/exact_arithmetic.hpp"
+
 #include <gurobi_c++.h>
 
 #include "gurobi_compat.hpp"
@@ -33,7 +35,6 @@ namespace precpack {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-using Int128 = __int128_t;
 
 inline constexpr double kIntegralityTolerance = 1e-6;
 inline constexpr double kPhaseOneTolerance = 1e-7;
@@ -824,12 +825,14 @@ public:
                               return lhs.weight == 0;
                           }
                       } else if constexpr (std::is_integral_v<Profit>) {
-                          const Int128 lhs_cross =
-                              static_cast<Int128>(lhs.profit) * rhs.weight;
-                          const Int128 rhs_cross =
-                              static_cast<Int128>(rhs.profit) * lhs.weight;
-                          if (lhs_cross != rhs_cross) {
-                              return lhs_cross > rhs_cross;
+                          const int comparison =
+                              exact_arithmetic::compare_nonnegative_fractions(
+                                  static_cast<std::uint64_t>(lhs.profit),
+                                  static_cast<std::uint64_t>(lhs.weight),
+                                  static_cast<std::uint64_t>(rhs.profit),
+                                  static_cast<std::uint64_t>(rhs.weight));
+                          if (comparison != 0) {
+                              return comparison > 0;
                           }
                       } else {
                           const long double lhs_cross =
@@ -920,15 +923,11 @@ public:
                 } else {
                     assert(weight > 0);
                     if constexpr (std::is_integral_v<Profit>) {
-                        const Int128 numerator =
-                            static_cast<Int128>(item_profit) * remaining;
-                        const Int128 fractional =
-                            (numerator + weight - 1) / weight;
-                        if (fractional >
-                            std::numeric_limits<Profit>::max()) {
-                            throw std::overflow_error(
+                        const std::int64_t fractional =
+                            exact_arithmetic::ceil_nonnegative_product_ratio(
+                                static_cast<std::int64_t>(item_profit),
+                                remaining, weight,
                                 "direct-pricing fractional bound overflow");
-                        }
                         return add(profit, static_cast<Profit>(fractional));
                     } else {
                         return profit +
@@ -946,14 +945,10 @@ public:
 private:
     [[nodiscard]] static Profit add(Profit lhs, Profit rhs) {
         if constexpr (std::is_integral_v<Profit>) {
-            const Int128 sum =
-                static_cast<Int128>(lhs) + static_cast<Int128>(rhs);
-            if (sum > std::numeric_limits<Profit>::max() ||
-                sum < std::numeric_limits<Profit>::min()) {
-                throw std::overflow_error(
-                    "direct-pricing fractional sum overflow");
-            }
-            return static_cast<Profit>(sum);
+            return static_cast<Profit>(exact_arithmetic::checked_add(
+                static_cast<std::int64_t>(lhs),
+                static_cast<std::int64_t>(rhs),
+                "direct-pricing fractional sum overflow"));
         } else {
             return lhs + rhs;
         }
@@ -1438,12 +1433,8 @@ private:
 
 [[nodiscard]] std::int64_t checked_add(std::int64_t lhs,
                                        std::int64_t rhs) {
-    const Int128 sum = static_cast<Int128>(lhs) + static_cast<Int128>(rhs);
-    if (sum > std::numeric_limits<std::int64_t>::max() ||
-        sum < std::numeric_limits<std::int64_t>::min()) {
-        throw std::overflow_error("fixed-point pricing value overflow");
-    }
-    return static_cast<std::int64_t>(sum);
+    return exact_arithmetic::checked_add(
+        lhs, rhs, "fixed-point pricing value overflow");
 }
 
 struct IntegerPricingResult {
@@ -2134,7 +2125,7 @@ struct MScaledDuals {
     std::int64_t scale = 1;
     std::vector<std::int64_t> item;
     std::vector<std::int64_t> sr;
-    Int128 sum = 0;
+    std::int64_t sum = 0;
 };
 
 [[nodiscard]] MScaledDuals scale_m_duals(
@@ -2164,7 +2155,7 @@ struct MScaledDuals {
     for (;;) {
         MScaledDuals result;
         result.scale = scale;
-        Int128 absolute_sum = 0;
+        std::int64_t absolute_sum = 0;
         result.item.reserve(duals.item.size());
         for (const double raw : duals.item) {
             const long double scaled =
@@ -2178,8 +2169,8 @@ struct MScaledDuals {
             const std::int64_t value =
                 static_cast<std::int64_t>(scaled);
             result.item.push_back(value);
-            result.sum += value;
-            absolute_sum += value;
+            result.sum = checked_add(result.sum, value);
+            absolute_sum = checked_add(absolute_sum, value);
         }
         result.sr.reserve(duals.sr.size());
         for (const double raw : duals.sr) {
@@ -2194,8 +2185,10 @@ struct MScaledDuals {
             const std::int64_t value =
                 static_cast<std::int64_t>(std::floor(scaled));
             result.sr.push_back(value);
-            result.sum += value;
-            absolute_sum -= value;
+            result.sum = checked_add(result.sum, value);
+            absolute_sum = exact_arithmetic::checked_subtract(
+                absolute_sum, value,
+                "M-master fixed-point accumulation overflow");
         }
         if (absolute_sum <= kMFixedPointBudget) {
             return result;
@@ -2214,20 +2207,14 @@ struct MScaledDuals {
     }
 }
 
-[[nodiscard]] int ceil_m_ratio(Int128 numerator,
+[[nodiscard]] int ceil_m_ratio(std::int64_t numerator,
                                std::int64_t denominator) {
     if (denominator <= 0) {
         throw std::invalid_argument(
             "nonpositive M-master certificate denominator");
     }
-    const Int128 value = numerator >= 0
-        ? (numerator + denominator - 1) / denominator
-        : numerator / denominator;
-    if (value > std::numeric_limits<int>::max() ||
-        value < std::numeric_limits<int>::min()) {
-        throw std::overflow_error("M-master bound does not fit int");
-    }
-    return static_cast<int>(value);
+    return exact_arithmetic::ceil_ratio_to_int(
+        numerator, denominator, "M-master bound does not fit int");
 }
 
 struct MSafeBoundResult {
@@ -2431,18 +2418,10 @@ struct ScaledDuals {
     return result;
 }
 
-[[nodiscard]] int ceil_scaled_bound(Int128 numerator, std::int64_t scale) {
-    Int128 quotient = 0;
-    if (numerator >= 0) {
-        quotient = (numerator + scale - 1) / scale;
-    } else {
-        quotient = numerator / scale;
-    }
-    if (quotient > std::numeric_limits<int>::max() ||
-        quotient < std::numeric_limits<int>::min()) {
-        throw std::overflow_error("certified lower bound does not fit in int");
-    }
-    return static_cast<int>(quotient);
+[[nodiscard]] int ceil_scaled_bound(std::int64_t numerator,
+                                    std::int64_t scale) {
+    return exact_arithmetic::ceil_ratio_to_int(
+        numerator, scale, "certified lower bound does not fit in int");
 }
 
 struct SafeBoundResult {
@@ -2463,9 +2442,10 @@ struct SafeBoundResult {
 
     std::vector<std::int64_t> arc_potential(
         static_cast<std::size_t>(instance.size()), 0);
-    Int128 numerator = 0;
+    std::int64_t numerator = 0;
     for (int item = 0; item < instance.size(); ++item) {
-        numerator += duals.item[static_cast<std::size_t>(item)];
+        numerator = checked_add(
+            numerator, duals.item[static_cast<std::size_t>(item)]);
     }
     for (std::size_t index = 0; index < instance.arcs.size(); ++index) {
         const std::int64_t value = duals.arc[index];
@@ -2477,31 +2457,33 @@ struct SafeBoundResult {
             arc_potential[static_cast<std::size_t>(arc.to)], value);
         arc_potential[static_cast<std::size_t>(arc.from)] = checked_add(
             arc_potential[static_cast<std::size_t>(arc.from)], -value);
-        numerator += static_cast<Int128>(arc.separation) * value;
+        numerator = checked_add(
+            numerator,
+            exact_arithmetic::checked_multiply(
+                arc.separation, value,
+                "fixed-point arc certificate overflow"));
     }
     for (const std::int64_t value : duals.sr) {
-        numerator += value;
+        numerator = checked_add(numerator, value);
     }
 
-    Int128 prefix_value = 0;
-    Int128 best_prefix_value = 0;
+    std::int64_t prefix_value = 0;
+    std::int64_t best_prefix_value = 0;
     const auto pricing_start = Clock::now();
     for (int bin = 0; bin < master.bin_count(); ++bin) {
         std::vector<std::int64_t> item_profit = duals.item;
         const std::int64_t multiplier = static_cast<std::int64_t>(bin + 1);
         for (int item = 0; item < instance.size(); ++item) {
-            const Int128 contribution =
-                static_cast<Int128>(multiplier) *
-                arc_potential[static_cast<std::size_t>(item)];
-            const Int128 total =
-                static_cast<Int128>(item_profit[static_cast<std::size_t>(item)]) +
-                contribution;
-            if (total > std::numeric_limits<std::int64_t>::max() ||
-                total < std::numeric_limits<std::int64_t>::min()) {
-                throw std::overflow_error("fixed-point item profit overflow");
-            }
+            const std::int64_t contribution =
+                exact_arithmetic::checked_multiply(
+                    multiplier,
+                    arc_potential[static_cast<std::size_t>(item)],
+                    "fixed-point item profit overflow");
+            const std::int64_t total = exact_arithmetic::checked_add(
+                item_profit[static_cast<std::size_t>(item)], contribution,
+                "fixed-point item profit overflow");
             item_profit[static_cast<std::size_t>(item)] =
-                static_cast<std::int64_t>(total);
+                total;
         }
         IntegerPricingSearch pricing(instance, compiled, master.sr_cuts(),
                                      duals.sr, bin, std::move(item_profit),
@@ -2513,8 +2495,11 @@ struct SafeBoundResult {
             result.proven = false;
             break;
         }
-        prefix_value += static_cast<Int128>(duals.scale) -
-                        priced.maximum_profit;
+        prefix_value = checked_add(
+            prefix_value,
+            exact_arithmetic::checked_subtract(
+                duals.scale, priced.maximum_profit,
+                "fixed-point prefix certificate overflow"));
         best_prefix_value = std::min(best_prefix_value, prefix_value);
     }
     statistics.pricing_seconds +=
@@ -2522,7 +2507,7 @@ struct SafeBoundResult {
     if (!result.proven) {
         return result;
     }
-    numerator += best_prefix_value;
+    numerator = checked_add(numerator, best_prefix_value);
     result.integer_bound = ceil_scaled_bound(numerator, duals.scale);
     return result;
 }

@@ -1,5 +1,7 @@
 #include "precpack/root_column_generation.hpp"
 
+#include "precpack/exact_arithmetic.hpp"
+
 #include <gurobi_c++.h>
 
 #include "gurobi_compat.hpp"
@@ -24,7 +26,6 @@ namespace precpack {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-using Int128 = __int128_t;
 
 inline constexpr double kPhaseOneTolerance = 1e-7;
 inline constexpr double kPaperObjectiveMultiplier = 400.0;
@@ -357,12 +358,8 @@ private:
 
 [[nodiscard]] std::int64_t checked_add(std::int64_t lhs,
                                        std::int64_t rhs) {
-    const Int128 sum = static_cast<Int128>(lhs) + rhs;
-    if (sum > std::numeric_limits<std::int64_t>::max() ||
-        sum < std::numeric_limits<std::int64_t>::min()) {
-        throw std::overflow_error("position-free pricing overflow");
-    }
-    return static_cast<std::int64_t>(sum);
+    return exact_arithmetic::checked_add(
+        lhs, rhs, "position-free pricing overflow");
 }
 
 struct LongPricedPattern {
@@ -400,6 +397,12 @@ public:
         }
         first_count_ = first_count;
         last_count_ = last_count;
+        for (const Candidate& candidate : candidates) {
+            if (candidate.weight < 0 || candidate.profit <= 0) {
+                throw std::invalid_argument(
+                    "invalid fractional-knapsack candidate");
+            }
+        }
         std::vector<int> density_order(candidate_count);
         for (std::size_t index = 0; index < candidate_count; ++index) {
             density_order[index] = static_cast<int>(index);
@@ -415,12 +418,14 @@ public:
                               return lhs.weight == 0;
                           }
                       } else {
-                          const Int128 lhs_cross =
-                              static_cast<Int128>(lhs.profit) * rhs.weight;
-                          const Int128 rhs_cross =
-                              static_cast<Int128>(rhs.profit) * lhs.weight;
-                          if (lhs_cross != rhs_cross) {
-                              return lhs_cross > rhs_cross;
+                          const int comparison =
+                              exact_arithmetic::compare_nonnegative_fractions(
+                                  static_cast<std::uint64_t>(lhs.profit),
+                                  static_cast<std::uint64_t>(lhs.weight),
+                                  static_cast<std::uint64_t>(rhs.profit),
+                                  static_cast<std::uint64_t>(rhs.weight));
+                          if (comparison != 0) {
+                              return comparison > 0;
                           }
                       }
                       return lhs_index < rhs_index;
@@ -434,10 +439,6 @@ public:
             const int candidate_index = density_order[density];
             const Candidate& candidate =
                 candidates[static_cast<std::size_t>(candidate_index)];
-            if (candidate.weight < 0 || candidate.profit <= 0) {
-                throw std::invalid_argument(
-                    "invalid fractional-knapsack candidate");
-            }
             density_position_[static_cast<std::size_t>(candidate_index)] =
                 static_cast<int>(density);
             density_item_[density] = candidate.item;
@@ -509,17 +510,12 @@ public:
                     profit = checked_add(profit, item_profit);
                 } else {
                     assert(weight > 0);
-                    const Int128 numerator =
-                        static_cast<Int128>(item_profit) * remaining;
-                    const Int128 fractional =
-                        (numerator + weight - 1) / weight;
-                    if (fractional >
-                        std::numeric_limits<std::int64_t>::max()) {
-                        throw std::overflow_error(
+                    const std::int64_t fractional =
+                        exact_arithmetic::ceil_nonnegative_product_ratio(
+                            item_profit, remaining, weight,
                             "fractional-knapsack bound overflow");
-                    }
                     return checked_add(
-                        profit, static_cast<std::int64_t>(fractional));
+                        profit, fractional);
                 }
                 active &= active - 1U;
             }
@@ -1197,7 +1193,7 @@ struct ScaledPositionFreeDuals {
     std::int64_t scale = 1;
     std::vector<std::int64_t> item;
     std::int64_t threshold = 0;
-    Int128 sum = 0;
+    std::int64_t sum = 0;
 };
 
 inline constexpr std::int64_t kFixedPointBudget =
@@ -1266,10 +1262,11 @@ inline constexpr std::int64_t kFixedPointBudget =
                 integer = std::min(integer, scale);
             }
             result.item.push_back(integer);
-            result.sum += integer;
+            result.sum = checked_add(result.sum, integer);
         }
         result.threshold = truncate_nonnegative(threshold, scale);
-        const Int128 total = result.sum + result.threshold;
+        const std::int64_t total =
+            checked_add(result.sum, result.threshold);
         if (total <= kFixedPointBudget) {
             return result;
         }
@@ -1288,21 +1285,13 @@ inline constexpr std::int64_t kFixedPointBudget =
     }
 }
 
-[[nodiscard]] int ceil_ratio(Int128 numerator, std::int64_t denominator) {
+[[nodiscard]] int ceil_ratio(std::int64_t numerator,
+                             std::int64_t denominator) {
     if (denominator <= 0) {
         throw std::invalid_argument("nonpositive certificate denominator");
     }
-    Int128 quotient = 0;
-    if (numerator >= 0) {
-        quotient = (numerator + denominator - 1) / denominator;
-    } else {
-        quotient = numerator / denominator;
-    }
-    if (quotient > std::numeric_limits<int>::max() ||
-        quotient < std::numeric_limits<int>::min()) {
-        throw std::overflow_error("position-free bound does not fit int");
-    }
-    return static_cast<int>(quotient);
+    return exact_arithmetic::ceil_ratio_to_int(
+        numerator, denominator, "position-free bound does not fit int");
 }
 
 [[nodiscard]] LongPricingResult run_long_pricing(
@@ -1513,10 +1502,13 @@ RootStatistics run_position_free_root_column_generation(
             break;
         }
 
-        const Int128 phase_one_dual =
-            certificate_scaled.sum -
-            static_cast<Int128>(fixed_k) * exact.maximum_profit;
-        if (phase_one_dual <= 0) {
+        const bool phase_one_positive =
+            certificate_scaled.sum > 0 &&
+            (exact.maximum_profit == 0 ||
+             (fixed_k <= certificate_scaled.sum / exact.maximum_profit &&
+              static_cast<std::int64_t>(fixed_k) * exact.maximum_profit <
+                  certificate_scaled.sum));
+        if (!phase_one_positive) {
             partial.numerical_failure = true;
             break;
         }

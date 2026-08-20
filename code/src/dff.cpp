@@ -1,5 +1,7 @@
 #include "precpack/dff.hpp"
 
+#include "precpack/exact_arithmetic.hpp"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -74,13 +76,19 @@ DffTransformSet build_complete_dff_transforms(
     }
     const auto threshold_less = [](const Threshold& lhs,
                                    const Threshold& rhs) {
-        return static_cast<__int128>(lhs.numerator) * rhs.denominator <
-               static_cast<__int128>(rhs.numerator) * lhs.denominator;
+        return exact_arithmetic::compare_nonnegative_fractions(
+                   static_cast<std::uint64_t>(lhs.numerator),
+                   static_cast<std::uint64_t>(lhs.denominator),
+                   static_cast<std::uint64_t>(rhs.numerator),
+                   static_cast<std::uint64_t>(rhs.denominator)) < 0;
     };
     const auto threshold_equal = [](const Threshold& lhs,
                                     const Threshold& rhs) {
-        return static_cast<__int128>(lhs.numerator) * rhs.denominator ==
-               static_cast<__int128>(rhs.numerator) * lhs.denominator;
+        return exact_arithmetic::compare_nonnegative_fractions(
+                   static_cast<std::uint64_t>(lhs.numerator),
+                   static_cast<std::uint64_t>(lhs.denominator),
+                   static_cast<std::uint64_t>(rhs.numerator),
+                   static_cast<std::uint64_t>(rhs.denominator)) == 0;
     };
     std::sort(thresholds.begin(), thresholds.end(), threshold_less);
     thresholds.erase(
@@ -98,17 +106,21 @@ DffTransformSet build_complete_dff_transforms(
             candidate.values.resize(weights.size(), 0);
             for (std::size_t item = 0; item < weights.size(); ++item) {
                 const std::int64_t value = base[item];
-                const __int128 scaled = static_cast<__int128>(value) *
-                                        threshold.denominator;
-                const __int128 lower =
-                    static_cast<__int128>(base_capacity) *
-                    threshold.numerator;
-                const __int128 upper =
-                    static_cast<__int128>(base_capacity) *
-                    (threshold.denominator - threshold.numerator);
-                if (scaled > upper) {
+                const int upper_comparison =
+                    exact_arithmetic::compare_nonnegative_fractions(
+                        static_cast<std::uint64_t>(value),
+                        static_cast<std::uint64_t>(base_capacity),
+                        static_cast<std::uint64_t>(
+                            threshold.denominator - threshold.numerator),
+                        static_cast<std::uint64_t>(threshold.denominator));
+                if (upper_comparison > 0) {
                     candidate.values[item] = base_capacity;
-                } else if (scaled >= lower) {
+                } else if (exact_arithmetic::compare_nonnegative_fractions(
+                               static_cast<std::uint64_t>(value),
+                               static_cast<std::uint64_t>(base_capacity),
+                               static_cast<std::uint64_t>(threshold.numerator),
+                               static_cast<std::uint64_t>(
+                                   threshold.denominator)) >= 0) {
                     candidate.values[item] = value;
                 }
             }

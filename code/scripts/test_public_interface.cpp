@@ -1,5 +1,7 @@
 #include "precpack/build_config.hpp"
 #include "precpack/cli.hpp"
+#include "precpack/dff.hpp"
+#include "precpack/exact_arithmetic.hpp"
 #include "precpack/instance_io.hpp"
 #include "precpack/result_io.hpp"
 #include "precpack/solver_profile.hpp"
@@ -11,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -110,6 +113,54 @@ void test_public_defaults() {
     require(options.threads == 1, "public thread default changed");
     require(options.output_directory == "results",
             "public output-directory default changed");
+}
+
+void test_exact_arithmetic() {
+    using precpack::exact_arithmetic::compare_nonnegative_fractions;
+    require(compare_nonnegative_fractions(1, 2, 2, 3) < 0,
+            "exact fraction ordering failed");
+
+    constexpr std::uint64_t maximum =
+        std::numeric_limits<std::uint64_t>::max();
+    require(compare_nonnegative_fractions(maximum - 1, maximum,
+                                          maximum - 2, maximum - 1) > 0,
+            "overflow-safe fraction ordering failed");
+    require(compare_nonnegative_fractions(maximum - 1, maximum - 1,
+                                          maximum, maximum) == 0,
+            "overflow-safe fraction equality failed");
+
+    precpack::exact_arithmetic::NonnegativeRatioSum sum(7);
+    sum.add(6);
+    sum.add(8);
+    sum.add(1);
+    require(sum.ceil_to_int() == 3, "exact ratio accumulation failed");
+
+    require(precpack::exact_arithmetic::ceil_ratio_to_int(
+                1, 2, "ceil test") == 1 &&
+                precpack::exact_arithmetic::ceil_ratio_to_int(
+                    -1, 2, "ceil test") == 0,
+            "signed ceiling division failed");
+    require(precpack::exact_arithmetic::ceil_nonnegative_product_ratio(
+                11, 3, 5, "product ratio test") == 7,
+            "exact product-ratio ceiling failed");
+
+    bool detected_overflow = false;
+    try {
+        static_cast<void>(precpack::exact_arithmetic::checked_multiply(
+            std::numeric_limits<std::int64_t>::max(), 2,
+            "expected multiplication overflow"));
+    } catch (const std::overflow_error&) {
+        detected_overflow = true;
+    }
+    require(detected_overflow, "signed multiplication overflow was missed");
+
+    const int maximum_int = std::numeric_limits<int>::max();
+    const precpack::DffTransformSet transforms =
+        precpack::build_complete_dff_transforms(
+            {maximum_int, maximum_int - 1, maximum_int / 2},
+            maximum_int, false);
+    require(!transforms.capacities.empty(),
+            "large-integer DFF construction failed");
 }
 
 void test_public_validation() {
@@ -340,6 +391,7 @@ void test_output_schema() {
 int main() {
     try {
         test_public_defaults();
+        test_exact_arithmetic();
         test_public_validation();
         test_instance_file_validation();
         test_bpp_profile();

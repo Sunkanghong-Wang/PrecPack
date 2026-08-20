@@ -35,7 +35,7 @@ To cite the contents of this repository, please cite both the paper and the soft
 - Paper DOI: `10.1287/ijoc.XXXX.YYYY`
 - Repository DOI: `10.1287/ijoc.XXXX.YYYY.cd`
 
-The IJOC manuscript number and DOIs have not yet been assigned. Replace `XXXX.YYYY` only after receiving the official identifiers from IJOC. Below is the BibTeX format required for citing the repository snapshot.
+Below is the BibTex for citing this snapshot of the repository.
 
 ```bibtex
 @misc{Wang2026PrecPack,

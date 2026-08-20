@@ -212,7 +212,8 @@ public:
             throw std::invalid_argument(
                 "too many ordinary BINLB weight classes");
         }
-        item_class_.assign(static_cast<std::size_t>(n_), 0U);
+        item_class_.assign(static_cast<std::size_t>(n_),
+                           std::uint16_t{0});
         for (int item = 0; item < n_; ++item) {
             const int weight =
                 instance_.items[static_cast<std::size_t>(item)].weight;
@@ -248,10 +249,11 @@ public:
             class_count_, limits_.memo_entry_limit);
         const std::size_t depth_count = static_cast<std::size_t>(
             std::min(n_, limits_.maximum_item_count) + 1);
-        state_counts_.assign(depth_count * class_count_, 0U);
-        load_counts_.assign(depth_count * class_count_, 0U);
-        candidate_classes_.assign(depth_count * class_count_, 0U);
-        lookup_counts_.assign(class_count_, 0U);
+        state_counts_.assign(depth_count * class_count_, std::uint16_t{0});
+        load_counts_.assign(depth_count * class_count_, std::uint16_t{0});
+        candidate_classes_.assign(depth_count * class_count_,
+                                  std::uint16_t{0});
+        lookup_counts_.assign(class_count_, std::uint16_t{0});
         greedy_bin_loads_.assign(
             static_cast<std::size_t>(limits_.maximum_item_count), 0);
 
@@ -276,7 +278,7 @@ public:
         int lb2_units = 0;
         int lb3_units = 0;
         std::uint16_t* root = state_row(0);
-        std::fill(root, root + class_count_, 0U);
+        std::fill(root, root + class_count_, std::uint16_t{0});
         for (int item = 0; item < n_; ++item) {
             if (!bit_is_set(remaining_items, item)) {
                 continue;
@@ -328,7 +330,8 @@ public:
 
     [[nodiscard]] bool lookup_exact(const std::uint64_t* remaining_items,
                                     int* optimum) {
-        std::fill(lookup_counts_.begin(), lookup_counts_.end(), 0U);
+        std::fill(lookup_counts_.begin(), lookup_counts_.end(),
+                  std::uint16_t{0});
         for (std::size_t block = 0; block < blocks_; ++block) {
             std::uint64_t value = remaining_items[block];
             while (value != 0U) {
@@ -660,7 +663,7 @@ private:
             throw std::logic_error("nonempty ordinary BINLB state has no item");
         }
         std::uint16_t* load = load_row(depth);
-        std::fill(load, load + class_count_, 0U);
+        std::fill(load, load + class_count_, std::uint16_t{0});
         load[anchor_class] = 1U;
         const int anchor_weight = weights_[anchor_class];
         int candidate_count = 0;
