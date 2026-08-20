@@ -1,0 +1,27 @@
+<number of tasks>
+8
+
+<cycle time>
+20
+
+<task times>
+1 11
+2 17
+3 9
+4 5
+5 8
+6 12
+7 10
+8 3
+
+<precedence relations>
+1,2
+2,3
+2,4
+3,5
+3,6
+4,6
+5,7
+6,8
+
+<end>

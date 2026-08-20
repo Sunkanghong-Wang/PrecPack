@@ -1,0 +1,29 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.9"
+      - name: Build and test
+        if: runner.os != 'Windows'
+        run: ./code/scripts/build.sh --gurobi off
+      - name: Build and test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\code\scripts\build.ps1 --gurobi off

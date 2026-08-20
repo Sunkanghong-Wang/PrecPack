@@ -1,0 +1,66 @@
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+.vs/
+*.suo
+*.user
+*.userosscache
+*.code-workspace
+
+CMakeUserPresets.json
+
+# CMake and compiler output
+/build/
+/build-*/
+/out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+build.ninja
+.ninja_deps
+.ninja_log
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.dSYM/
+*.pdb
+*.ilk
+*.exp
+*.gcda
+*.gcno
+*.gcov
+
+# Generated solver output
+/results/
+/output/
+/outputs/
+*.log
+*.profraw
+*.profdata
+.*.lock
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Licenses and credentials must remain local
+gurobi.lic
+*.wls

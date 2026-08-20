@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use PrecPack, please cite the accompanying manuscript."
+title: "PrecPack: An Efficient Open-Source Exact Solver for Bin Packing with Generalized Precedence Constraints"
+type: software
+repository-code: "https://github.com/Sunkanghong-Wang/PrecPack"
+authors:
+  - family-names: Wang
+    given-names: Sunkanghong
+    email: wskh0929@gmail.com
+  - family-names: You
+    given-names: Zhengzhong
+  - family-names: Baldacci
+    given-names: Roberto
+  - family-names: Mo
+    given-names: Baichuan
+  - family-names: Wei
+    given-names: Lijun
+  - family-names: Xu
+    given-names: Zhou
+license: MIT

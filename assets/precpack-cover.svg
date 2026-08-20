@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2075" height="700" viewBox="0 0 2075 700" role="img" aria-labelledby="title description">
+  <title id="title">PrecPack</title>
+  <desc id="description">Five precedence-linked items and their ordered bin assignment.</desc>
+
+  <defs>
+    <linearGradient id="wordmarkBlue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2470DC"/>
+      <stop offset="1" stop-color="#1552B3"/>
+    </linearGradient>
+    <clipPath id="bin1Clip"><rect x="754" y="182" width="64" height="226" rx="9"/></clipPath>
+    <clipPath id="bin2Clip"><rect x="880" y="182" width="64" height="226" rx="9"/></clipPath>
+    <clipPath id="bin3Clip"><rect x="1006" y="182" width="64" height="226" rx="9"/></clipPath>
+    <clipPath id="bin4Clip"><rect x="1132" y="182" width="64" height="226" rx="9"/></clipPath>
+    <clipPath id="bin5Clip"><rect x="1258" y="182" width="64" height="226" rx="9"/></clipPath>
+  </defs>
+
+  <rect width="2075" height="700" fill="#FFFFFF"/>
+
+  <g fill="none" stroke="#061636" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 818 132 L 862 132"/>
+    <path d="M 944 132 L 988 132"/>
+    <path d="M 1070 132 L 1114 132"/>
+    <path d="M 1196 132 L 1240 132"/>
+    <path d="M 828 102 C 918 34 1065 32 1137 82"/>
+  </g>
+  <g fill="#061636">
+    <path d="M 862 122 L 882 132 L 862 142 Z"/>
+    <path d="M 988 122 L 1008 132 L 988 142 Z"/>
+    <path d="M 1114 122 L 1134 132 L 1114 142 Z"/>
+    <path d="M 1240 122 L 1260 132 L 1240 142 Z"/>
+    <path d="M 1154 96 L 1131 89 L 1142 75 Z"/>
+  </g>
+
+  <g>
+    <circle cx="786" cy="132" r="29" fill="#04142E"/>
+    <circle cx="912" cy="132" r="29" fill="#0B5D62"/>
+    <circle cx="1038" cy="132" r="29" fill="#0F3CA9"/>
+    <circle cx="1164" cy="132" r="29" fill="#6C55D9"/>
+    <circle cx="1290" cy="132" r="29" fill="#ED9720"/>
+  </g>
+
+  <g>
+    <rect x="754" y="340" width="64" height="68" fill="#04142E" clip-path="url(#bin1Clip)"/>
+    <rect x="880" y="300" width="64" height="108" fill="#0B5D62" clip-path="url(#bin2Clip)"/>
+    <rect x="1006" y="260" width="64" height="148" fill="#0F3CA9" clip-path="url(#bin3Clip)"/>
+    <rect x="1132" y="220" width="64" height="188" fill="#6C55D9" clip-path="url(#bin4Clip)"/>
+    <rect x="1258" y="340" width="64" height="68" fill="#ED9720" clip-path="url(#bin5Clip)"/>
+  </g>
+
+  <g fill="none" stroke="#061636" stroke-width="7" stroke-linejoin="round">
+    <rect x="746" y="174" width="80" height="242" rx="17"/>
+    <rect x="872" y="174" width="80" height="242" rx="17"/>
+    <rect x="998" y="174" width="80" height="242" rx="17"/>
+    <rect x="1124" y="174" width="80" height="242" rx="17"/>
+    <rect x="1250" y="174" width="80" height="242" rx="17"/>
+  </g>
+
+  <g fill="none" stroke="#D9DDE3" stroke-width="3">
+    <path d="M 754 220 H 818 M 754 260 H 818 M 754 300 H 818 M 754 340 H 818 M 754 380 H 818"/>
+    <path d="M 880 220 H 944 M 880 260 H 944 M 880 300 H 944 M 880 340 H 944 M 880 380 H 944"/>
+    <path d="M 1006 220 H 1070 M 1006 260 H 1070 M 1006 300 H 1070 M 1006 340 H 1070 M 1006 380 H 1070"/>
+    <path d="M 1132 220 H 1196 M 1132 260 H 1196 M 1132 300 H 1196 M 1132 340 H 1196 M 1132 380 H 1196"/>
+    <path d="M 1258 220 H 1322 M 1258 260 H 1322 M 1258 300 H 1322 M 1258 340 H 1322 M 1258 380 H 1322"/>
+  </g>
+
+  <text x="1037.5" y="640" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="200" font-weight="800" letter-spacing="-9"><tspan fill="#071B3D">Prec</tspan><tspan fill="url(#wordmarkBlue)">Pack</tspan></text>
+</svg>
