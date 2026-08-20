@@ -9,42 +9,13 @@
 #include <gurobi_c++.h>
 #endif
 
-#include <cctype>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
-#include <optional>
 #include <stdexcept>
 #include <string>
-#include <string_view>
-#include <utility>
 
 namespace {
-
-[[nodiscard]] std::string sanitize_filename(std::string value) {
-    for (char& character : value) {
-        const unsigned char code = static_cast<unsigned char>(character);
-        if (std::isalnum(code) == 0 && character != '-' && character != '_' &&
-            character != '.') {
-            character = '_';
-        }
-    }
-    return value.empty() ? "instance" : value;
-}
-
-[[nodiscard]] std::string instance_key(
-    const precpack::CommandLineOptions& options) {
-    std::string key = options.instance_path.stem().string();
-    if (options.graph_path.has_value()) {
-        std::filesystem::path collection =
-            options.graph_path->parent_path().parent_path().filename();
-        if (collection.empty()) {
-            collection = options.graph_path->stem();
-        }
-        key += "__" + collection.string();
-    }
-    return sanitize_filename(std::move(key));
-}
 
 [[nodiscard]] std::string problem_slug(precpack::ProblemKind problem) {
     switch (problem) {
@@ -77,7 +48,8 @@ int main(int argc, char** argv) {
                                     precpack::to_string(options.problem));
         const precpack::Solution solution = precpack::solve(instance, config);
 
-        const std::string key = instance_key(options);
+        const std::string key = precpack::make_instance_key(
+            options.instance_path, options.graph_path);
         const std::filesystem::path assignment_path =
             options.output_directory / "solutions" /
             (problem_slug(options.problem) + "__" + key + ".sol");

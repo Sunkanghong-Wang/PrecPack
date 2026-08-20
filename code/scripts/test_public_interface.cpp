@@ -325,6 +325,20 @@ void test_salbp_profile() {
 }
 
 void test_output_schema() {
+    require(precpack::make_instance_key("external-a/case.txt", std::nullopt) ==
+                "case__3a95170ceb4e4d41",
+            "instance-key path fingerprint changed");
+    require(precpack::make_instance_key("external-a/case.txt", std::nullopt) !=
+                precpack::make_instance_key("external-b/case.txt", std::nullopt),
+            "same-stem instances from different directories share a key");
+    require(precpack::make_instance_key(
+                "data/items/case.txt",
+                std::filesystem::path("data/graphs/separation-01/case.graph")) !=
+                precpack::make_instance_key(
+                    "data/items/case.txt",
+                    std::filesystem::path("data/graphs/separation-03/case.graph")),
+            "different BPP-GP graphs share an instance key");
+
     TemporaryDirectory temporary_directory;
     const std::filesystem::path csv_path =
         temporary_directory.path() / "BPP-P_Results.csv";

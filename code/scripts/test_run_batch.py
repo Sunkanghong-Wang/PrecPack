@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,20 @@ class BatchPairingTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
         return path.resolve()
+
+    def write_result_csv(
+        self, output_dir: Path, problem: str, case: run_batch.Case
+    ) -> Path:
+        result_path = output_dir / f"{run_batch.PROBLEM_NAMES[problem]}_Results.csv"
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        row = {column: "" for column in run_batch.RESULT_COLUMNS}
+        row["instance_key"] = run_batch.result_key(case)
+        row["solution_file"] = run_batch.solution_reference(problem, case)
+        with result_path.open("w", encoding="utf-8", newline="") as output_file:
+            writer = csv.DictWriter(output_file, fieldnames=run_batch.RESULT_COLUMNS)
+            writer.writeheader()
+            writer.writerow(row)
+        return result_path
 
     def test_single_instance_and_graph_files(self) -> None:
         instance = self.make_file(self.root / "items" / "case.txt")
@@ -115,6 +130,64 @@ class BatchPairingTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "no graph with stem"):
             run_batch.collect_cases("bpp-gp", instance, graph)
+
+    def test_same_stem_in_different_directories_has_unique_output(self) -> None:
+        first = run_batch.Case(self.make_file(self.root / "first" / "case.txt"))
+        second = run_batch.Case(self.make_file(self.root / "second" / "case.txt"))
+
+        self.assertNotEqual(run_batch.result_key(first), run_batch.result_key(second))
+        self.assertNotEqual(
+            run_batch.solution_reference("bpp-p", first),
+            run_batch.solution_reference("bpp-p", second),
+        )
+
+    def test_same_instance_with_different_graphs_has_unique_output(self) -> None:
+        instance = self.make_file(self.root / "items" / "case.txt")
+        first = run_batch.Case(
+            instance, self.make_file(self.root / "first" / "case.graph")
+        )
+        second = run_batch.Case(
+            instance, self.make_file(self.root / "second" / "case.graph")
+        )
+
+        self.assertNotEqual(run_batch.result_key(first), run_batch.result_key(second))
+
+    def test_path_hash_is_stable(self) -> None:
+        case = run_batch.Case(Path("external-a/case.txt"))
+        self.assertEqual(run_batch.result_key(case), "case__3a95170ceb4e4d41")
+
+    def test_resume_requires_matching_csv_row_and_solution(self) -> None:
+        output_dir = self.root / "results"
+        instance = self.make_file(self.root / "items" / "case.txt")
+        case = run_batch.Case(instance)
+        solution = output_dir / run_batch.solution_reference("bpp-p", case)
+        solution.parent.mkdir(parents=True)
+        solution.write_text("Bin 1: 1\n", encoding="utf-8")
+
+        completed = run_batch.read_completed_results(output_dir, "bpp-p")
+        self.assertFalse(
+            run_batch.case_is_complete(output_dir, "bpp-p", case, completed)
+        )
+
+        self.write_result_csv(output_dir, "bpp-p", case)
+        completed = run_batch.read_completed_results(output_dir, "bpp-p")
+        self.assertTrue(
+            run_batch.case_is_complete(output_dir, "bpp-p", case, completed)
+        )
+
+        solution.write_text("", encoding="utf-8")
+        self.assertFalse(
+            run_batch.case_is_complete(output_dir, "bpp-p", case, completed)
+        )
+
+    def test_resume_rejects_incompatible_csv(self) -> None:
+        output_dir = self.root / "results"
+        result_path = output_dir / "BPP-P_Results.csv"
+        result_path.parent.mkdir(parents=True)
+        result_path.write_text("old,header\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "incompatible header"):
+            run_batch.read_completed_results(output_dir, "bpp-p")
 
 
 if __name__ == "__main__":

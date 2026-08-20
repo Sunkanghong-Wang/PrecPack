@@ -201,21 +201,11 @@ target_compile_definitions(precpack_core PRIVATE
 include(CTest)
 if(BUILD_TESTING)
     set(PRECPACK_TEST_TARGETS "")
-    if(PRECPACK_HAS_GUROBI)
-        add_executable(precpack_tests scripts/test_main.cpp)
-        target_link_libraries(precpack_tests PRIVATE precpack_core)
-        precpack_configure_target(precpack_tests)
-        add_test(NAME precpack_tests COMMAND precpack_tests)
-        list(APPEND PRECPACK_TEST_TARGETS precpack_tests)
-    else()
-        add_executable(precpack_gurobi_free_tests
-            scripts/test_gurobi_free.cpp)
-        target_link_libraries(precpack_gurobi_free_tests PRIVATE precpack_core)
-        precpack_configure_target(precpack_gurobi_free_tests)
-        add_test(NAME precpack_gurobi_free_tests
-                 COMMAND precpack_gurobi_free_tests)
-        list(APPEND PRECPACK_TEST_TARGETS precpack_gurobi_free_tests)
-    endif()
+    add_executable(precpack_exactness_tests scripts/test_exactness.cpp)
+    target_link_libraries(precpack_exactness_tests PRIVATE precpack_core)
+    precpack_configure_target(precpack_exactness_tests)
+    add_test(NAME precpack_exactness_tests COMMAND precpack_exactness_tests)
+    list(APPEND PRECPACK_TEST_TARGETS precpack_exactness_tests)
 
     add_executable(precpack_interface_tests scripts/test_public_interface.cpp)
     target_link_libraries(precpack_interface_tests PRIVATE precpack_core)
@@ -254,8 +244,7 @@ endif()
 install(TARGETS precpack RUNTIME DESTINATION bin)
 
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES
-    ${PRECPACK_CORE_SOURCES} src/main.cpp scripts/test_main.cpp
-    scripts/test_gurobi_free.cpp
+    ${PRECPACK_CORE_SOURCES} src/main.cpp scripts/test_exactness.cpp
     scripts/test_public_interface.cpp scripts/test_parallel_bbr.cpp)
 
 if(PRECPACK_HAS_GUROBI)

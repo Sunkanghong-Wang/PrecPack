@@ -4,9 +4,14 @@
 
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace precpack {
+
+[[nodiscard]] std::string make_instance_key(
+    const std::filesystem::path& instance_path,
+    const std::optional<std::filesystem::path>& graph_path);
 
 void append_result_csv(const std::filesystem::path& path,
                        std::string_view instance_key,

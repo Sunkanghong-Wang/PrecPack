@@ -2,8 +2,10 @@
 
 #include "precpack/build_config.hpp"
 
+#include <cstdint>
 #include <fstream>
 #include <iomanip>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -55,6 +57,28 @@ inline constexpr const char* kResultHeader =
     return normalized.generic_string();
 }
 
+[[nodiscard]] std::string sanitize_filename(std::string value) {
+    for (char& character : value) {
+        const bool alphanumeric =
+            (character >= '0' && character <= '9') ||
+            (character >= 'A' && character <= 'Z') ||
+            (character >= 'a' && character <= 'z');
+        if (!alphanumeric && character != '-' && character != '_' &&
+            character != '.') {
+            character = '_';
+        }
+    }
+    return value.empty() ? "instance" : value;
+}
+
+void update_path_hash(std::uint64_t& hash, std::string_view value) noexcept {
+    constexpr std::uint64_t kFnvPrime = 1'099'511'628'211ULL;
+    for (const unsigned char byte : value) {
+        hash ^= byte;
+        hash *= kFnvPrime;
+    }
+}
+
 void require_compatible_header(const std::filesystem::path& path) {
     std::ifstream input(path);
     if (!input) {
@@ -72,6 +96,23 @@ void require_compatible_header(const std::filesystem::path& path) {
     }
 }
 
+}
+
+std::string make_instance_key(
+    const std::filesystem::path& instance_path,
+    const std::optional<std::filesystem::path>& graph_path) {
+    constexpr std::uint64_t kFnvOffsetBasis = 14'695'981'039'346'656'037ULL;
+    std::uint64_t hash = kFnvOffsetBasis;
+    update_path_hash(hash, recorded_path(instance_path));
+    update_path_hash(hash, std::string_view{"\0", 1});
+    if (graph_path.has_value()) {
+        update_path_hash(hash, recorded_path(*graph_path));
+    }
+
+    std::ostringstream key;
+    key << sanitize_filename(instance_path.stem().string()) << "__"
+        << std::hex << std::setfill('0') << std::setw(16) << hash;
+    return key.str();
 }
 
 void append_result_csv(const std::filesystem::path& path,

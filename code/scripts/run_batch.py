@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -21,6 +23,31 @@ OTTO_BASE_DIRECTORIES = (
     "n_0500",
     "n_0750",
     "n_1000",
+)
+PROBLEM_NAMES = {
+    "salbp-i": "SALBP-I",
+    "bpp-p": "BPP-P",
+    "bpp-gp": "BPP-GP",
+}
+RESULT_COLUMNS = (
+    "instance_key",
+    "problem",
+    "instance_file",
+    "graph_file",
+    "n",
+    "capacity",
+    "status",
+    "lower_bound",
+    "upper_bound",
+    "gap",
+    "time_seconds",
+    "time_limit_seconds",
+    "threads",
+    "state_limit",
+    "memory_limit_mb",
+    "bbr_peak_memory_bytes",
+    "gurobi_enabled",
+    "solution_file",
 )
 
 
@@ -170,11 +197,78 @@ def sanitized_filename(value: str) -> str:
     return result or "instance"
 
 
+def recorded_path(path: Path) -> str:
+    normalized = Path(os.path.normpath(path))
+    if not normalized.is_absolute():
+        return normalized.as_posix()
+    try:
+        return normalized.relative_to(REPOSITORY_ROOT).as_posix()
+    except ValueError:
+        return normalized.as_posix()
+
+
+def path_hash(instance: Path, graph: Path | None) -> str:
+    value = recorded_path(instance).encode("utf-8") + b"\0"
+    if graph is not None:
+        value += recorded_path(graph).encode("utf-8")
+    result = 14_695_981_039_346_656_037
+    for byte in value:
+        result ^= byte
+        result = (result * 1_099_511_628_211) & 0xFFFFFFFFFFFFFFFF
+    return f"{result:016x}"
+
+
+def result_key(case: Case) -> str:
+    return (
+        f"{sanitized_filename(case.instance.stem)}__"
+        f"{path_hash(case.instance, case.graph)}"
+    )
+
+
 def output_key(problem: str, case: Case) -> str:
-    key = case.instance.stem
-    if case.graph is not None:
-        key += "__" + case.graph.parent.parent.name
-    return f"{problem}__{sanitized_filename(key)}.sol"
+    return f"{problem}__{result_key(case)}.sol"
+
+
+def solution_reference(problem: str, case: Case) -> str:
+    return (Path("solutions") / output_key(problem, case)).as_posix()
+
+
+def read_completed_results(output_dir: Path, problem: str) -> set[tuple[str, str]]:
+    result_path = output_dir / f"{PROBLEM_NAMES[problem]}_Results.csv"
+    if not result_path.exists() or result_path.stat().st_size == 0:
+        return set()
+    if not result_path.is_file():
+        raise ValueError(f"result CSV is not a file: {result_path}")
+
+    with result_path.open(encoding="utf-8", newline="") as input_file:
+        reader = csv.DictReader(input_file)
+        if tuple(reader.fieldnames or ()) != RESULT_COLUMNS:
+            raise ValueError(
+                f"existing result CSV has an incompatible header: {result_path}"
+            )
+        completed: set[tuple[str, str]] = set()
+        for line_number, row in enumerate(reader, start=2):
+            if None in row or any(value is None for value in row.values()):
+                raise ValueError(
+                    f"malformed result CSV row {line_number}: {result_path}"
+                )
+            completed.add((row["instance_key"], row["solution_file"]))
+        return completed
+
+
+def case_is_complete(
+    output_dir: Path,
+    problem: str,
+    case: Case,
+    completed_results: set[tuple[str, str]],
+) -> bool:
+    reference = solution_reference(problem, case)
+    solution = output_dir / reference
+    return (
+        solution.is_file()
+        and solution.stat().st_size > 0
+        and (result_key(case), reference) in completed_results
+    )
 
 
 def main() -> int:
@@ -202,13 +296,15 @@ def main() -> int:
                 "selected files contain duplicate output names; "
                 "run the conflicting directories separately"
             )
-        output_dir = (
-            args.output_dir or REPOSITORY_ROOT / "results" / args.problem
-        )
+        output_dir = args.output_dir or REPOSITORY_ROOT / "results" / args.problem
+        if not output_dir.is_absolute():
+            output_dir = (Path.cwd() / output_dir).resolve()
+        completed_results = read_completed_results(output_dir, args.problem)
         failures = 0
         for index, case in enumerate(cases, start=1):
-            solution = output_dir / "solutions" / output_key(args.problem, case)
-            if solution.is_file() and solution.stat().st_size > 0:
+            if case_is_complete(
+                output_dir, args.problem, case, completed_results
+            ):
                 print(f"[{index}/{len(cases)}] skip {case.instance.name}")
                 continue
             command = [

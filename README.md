@@ -35,7 +35,7 @@ To cite the contents of this repository, please cite both the paper and the soft
 - Paper DOI: `10.1287/ijoc.XXXX.YYYY`
 - Repository DOI: `10.1287/ijoc.XXXX.YYYY.cd`
 
-Below is the BibTex for citing this snapshot of the repository.
+Below is the BibTeX for citing this snapshot of the repository.
 
 ```bibtex
 @misc{Wang2026PrecPack,
@@ -137,7 +137,7 @@ Gurobi 13.0 is not required. PrecPack supports versions 9.1 through 13.x. It con
 
 Without Gurobi, PrecPack disables initial/root column generation and Gurobi-based reference methods used by regression tests. The public SALBP-I, BPP-P, and BPP-GP interface continues to run the same complete BBR search, return validated incumbents and certified lower bounds under limits, and report `OPTIMAL` only after the BBR proof is complete. Thus Gurobi can affect running time and search statistics, but it is not required for correctness or exactness.
 
-If a Gurobi-enabled binary is run without an accessible license, the optional root module is abandoned safely and PrecPack continues with BBR; the solution file records that the optional strengthening was unavailable. For predictable deployment on machines without a commercial license, prefer an `OFF` build.
+If a Gurobi-enabled binary is run without an accessible license, the optional root module is abandoned safely and PrecPack continues with BBR. For predictable deployment on machines without a commercial license, prefer an `OFF` build.
 
 To enable the optional backend, set `GUROBI_HOME` to the platform directory containing Gurobi's `include`, `lib`, and, on Windows, `bin` directories:
 
@@ -159,10 +159,10 @@ macOS or Linux:
 ./code/scripts/build.sh --gurobi off
 ```
 
-Windows PowerShell:
+Windows Command Prompt:
 
-```powershell
-.\code\scripts\build.ps1 --gurobi off
+```bat
+code\scripts\build.bat --gurobi off
 ```
 
 Omit `--gurobi off` to use the default `AUTO` detection. To require the optional Gurobi backend, set `GUROBI_HOME` and use `--gurobi on`:
@@ -172,12 +172,12 @@ export GUROBI_HOME=/path/to/gurobi/platform
 ./code/scripts/build.sh --gurobi on
 ```
 
-```powershell
-$env:GUROBI_HOME = "C:\path\to\gurobi\win64"
-.\code\scripts\build.ps1 --gurobi on
+```bat
+set "GUROBI_HOME=C:\path\to\gurobi\win64"
+code\scripts\build.bat --gurobi on
 ```
 
-These launchers configure a Release build, compile PrecPack and the tests appropriate to the selected backend, and run the test suite. Compilation may use multiple jobs; solver execution remains single-threaded unless `--threads` is explicitly set.
+These launchers configure a Release build, compile PrecPack, and run the test suite. Every configuration runs the Gurobi-free core exactness regressions, including brute-force oracles, state-memory collision and reopening checks, DFF and BINLB bounds, dominance rules, and structured preprocessing. When Gurobi is available, root-bound, branch-price, and compact-MIP reference tests run in addition. Compilation may use multiple jobs; solver execution remains single-threaded unless `--threads` is explicitly set.
 
 The checked-in GitHub Actions workflow performs the Gurobi-free Release build and test suite on macOS, Linux, and Windows. Optional Gurobi builds remain local because they require a separately licensed installation.
 
@@ -205,10 +205,10 @@ macOS or Linux:
 ./code/scripts/run_examples.sh
 ```
 
-Windows PowerShell:
+Windows Command Prompt:
 
-```powershell
-.\code\scripts\run_examples.ps1
+```bat
+code\scripts\run_examples.bat
 ```
 
 Example outputs are written below `results/examples/`, which is ignored by Git.
@@ -239,7 +239,7 @@ Each problem-specific results CSV contains one row per run with the following fi
 
 | Column | Meaning |
 | --- | --- |
-| `instance_key` | File-safe identifier used to name the solution |
+| `instance_key` | File-safe identifier consisting of the input stem and a deterministic fingerprint of the normalized input paths; used to name the solution |
 | `problem` | `SALBP-I`, `BPP-P`, or `BPP-GP` |
 | `instance_file` | Input `.txt` path |
 | `graph_file` | Input `.graph` path; empty for SALBP-I and BPP-P |
@@ -260,11 +260,23 @@ Each problem-specific results CSV contains one row per run with the following fi
 
 CSV fields containing commas, quotes, or line breaks use standard double-quote escaping. Input paths below the working directory are recorded as normalized relative paths. PrecPack refuses to append to an existing problem-specific results CSV with a different header, preventing rows with incompatible schemas from being mixed.
 
-Each `.sol` file contains one nonempty line per used bin:
+The fixed public BBR interface reports four termination statuses:
+
+| Status | Meaning |
+| --- | --- |
+| `OPTIMAL` | The exact proof is complete and the certified lower bound equals the saved upper bound. |
+| `TIME_LIMIT` | The global wall-clock limit was reached before the proof completed. |
+| `STATE_LIMIT` | The global remembered-state limit was reached before the proof completed. |
+| `MEMORY_LIMIT` | The global BBR accounted-memory limit was reached before the proof completed. |
+
+All three limited statuses retain a validated feasible assignment and a certified lower bound. They do not certify optimality.
+
+Each `.sol` file contains one line for every bin or station position from 1 through the saved upper bound. Generalized separations may require an unused intermediate position, which is written as an empty line after the colon:
 
 ```text
 Bin 1: 1 4 7
-Bin 2: 2 3 5 6
+Bin 2:
+Bin 3: 2 3 5 6
 ```
 
 Bin numbers and item numbers are one-based, and item numbers refer to the original input order. Weights, loads, bounds, status, resource limits, and runtime statistics are omitted because they can be recovered from the input files and the matching CSV row.
@@ -293,9 +305,9 @@ Use `build\Release\precpack.exe` for a standard Windows build.
 
 ### Batch Runs
 
-`code/scripts/run_batch.py` executes instances sequentially and resumes safely by skipping an instance when its nonempty solution file already exists.
+`code/scripts/run_batch.py` executes instances sequentially and resumes safely. It skips an instance only when a matching row is present in the compatible problem-specific results CSV and the referenced solution file exists and is nonempty.
 
-The commands below invoke the Python launcher directly. On macOS or Linux, `python3 code/scripts/run_batch.py` may be replaced with `./code/scripts/run_batch.sh`. On Windows PowerShell, use `.\code\scripts\run_batch.ps1` with the same arguments.
+The commands below invoke the Python launcher directly. On macOS or Linux, `python3 code/scripts/run_batch.py` may be replaced with `./code/scripts/run_batch.sh`. On Windows Command Prompt, use `code\scripts\run_batch.bat` with the same arguments.
 
 Run a small BPP-P directory:
 

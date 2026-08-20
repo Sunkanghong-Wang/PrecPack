@@ -25,7 +25,7 @@ jobs:
         run: ./code/scripts/build.sh --gurobi off
       - name: Build and test
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: .\code\scripts\build.ps1 --gurobi off
+        shell: cmd
+        run: call code\scripts\build.bat --gurobi off
       - name: Test batch pairing
         run: python code/scripts/test_run_batch.py
