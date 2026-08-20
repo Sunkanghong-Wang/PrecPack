@@ -71,6 +71,63 @@ def files_below(path: Path, suffix: str) -> list[Path]:
     )
 
 
+def collect_bpp_gp_cases(item_path: Path, graph_path: Path) -> list[Case]:
+    instances = files_below(item_path, ".txt")
+    graphs = files_below(graph_path, ".graph")
+
+    if item_path.is_file():
+        instance = instances[0]
+        matching_graphs = [graph for graph in graphs if graph.stem == instance.stem]
+        if not matching_graphs:
+            raise ValueError(
+                f"no graph with stem {instance.stem!r} below {graph_path}"
+            )
+        return [Case(instance, graph) for graph in matching_graphs]
+
+    instances_by_stem: dict[str, list[Path]] = {}
+    for instance in instances:
+        instances_by_stem.setdefault(instance.stem, []).append(instance)
+
+    item_root = item_path.resolve()
+    cases: list[Case] = []
+    for graph in graphs:
+        candidates = instances_by_stem.get(graph.stem, [])
+        if not candidates:
+            raise ValueError(
+                f"no matching instance file for {graph} below {item_path}"
+            )
+
+        direct_candidates = (
+            item_root / graph.parent.name / f"{graph.stem}.txt",
+            item_root / f"{graph.stem}.txt",
+        )
+        instance = next(
+            (
+                candidate.resolve()
+                for candidate in direct_candidates
+                if candidate.is_file() and candidate.resolve() in candidates
+            ),
+            None,
+        )
+        if instance is None:
+            same_size = [
+                candidate
+                for candidate in candidates
+                if candidate.parent.name == graph.parent.name
+            ]
+            if len(same_size) == 1:
+                instance = same_size[0]
+            elif len(candidates) == 1:
+                instance = candidates[0]
+            else:
+                matches = ", ".join(str(candidate) for candidate in candidates)
+                raise ValueError(
+                    f"ambiguous instance match for {graph}: {matches}"
+                )
+        cases.append(Case(instance, graph))
+    return cases
+
+
 def collect_cases(
     problem: str,
     input_path: Path | None,
@@ -96,17 +153,9 @@ def collect_cases(
         )
         return [Case(file) for root in roots for file in files_below(root, ".txt")]
 
-    item_root = input_path or DATA / "otto"
-    graph_root = graph_path or BPP_GP_GRAPHS
-    graphs = files_below(graph_root, ".graph")
-    cases: list[Case] = []
-    for graph in graphs:
-        n_directory = graph.parent.name
-        instance = item_root / n_directory / f"{graph.stem}.txt"
-        if not instance.is_file():
-            raise ValueError(f"no matching instance file for {graph}: {instance}")
-        cases.append(Case(instance.resolve(), graph))
-    return cases
+    return collect_bpp_gp_cases(
+        input_path or DATA / "otto", graph_path or BPP_GP_GRAPHS
+    )
 
 
 def sanitized_filename(value: str) -> str:
