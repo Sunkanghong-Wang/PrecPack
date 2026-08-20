@@ -89,7 +89,7 @@ void append_result_csv(const std::filesystem::path& path,
     if (!needs_header) {
         require_compatible_header(path);
     }
-    std::ofstream output(path, std::ios::app);
+    std::ofstream output(path, std::ios::app | std::ios::binary);
     if (!output) {
         throw std::runtime_error("cannot open result CSV: " + path.string());
     }
@@ -124,7 +124,7 @@ void write_assignment(const std::filesystem::path& path,
     if (!path.parent_path().empty()) {
         std::filesystem::create_directories(path.parent_path());
     }
-    std::ofstream output(path);
+    std::ofstream output(path, std::ios::binary);
     if (!output) {
         throw std::runtime_error("cannot open assignment file: " +
                                  path.string());

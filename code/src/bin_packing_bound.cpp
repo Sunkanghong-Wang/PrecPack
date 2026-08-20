@@ -467,7 +467,8 @@ private:
         }
 
         std::fill(subset_reachable_.begin(),
-                  subset_reachable_.begin() + largest_excluded + 1, 0U);
+                  subset_reachable_.begin() + largest_excluded + 1,
+                  static_cast<unsigned char>(0));
         subset_reachable_[0] = 1U;
         int reachable_limit = 0;
         for (std::size_t item_class = 0; item_class < class_count_;
