@@ -1,7 +1,9 @@
 @echo off
 setlocal EnableExtensions
 
-for %%I in ("%~dp0..\..") do set "REPOSITORY_ROOT=%%~fI"
+set "SCRIPT_DIRECTORY=%~dp0"
+set "SCRIPT_NAME=%~nx0"
+for %%I in ("%SCRIPT_DIRECTORY%..\..") do set "REPOSITORY_ROOT=%%~fI"
 set "CODE_DIRECTORY=%REPOSITORY_ROOT%\code"
 set "BUILD_DIRECTORY=%REPOSITORY_ROOT%\build"
 set "GUROBI_MODE=AUTO"
@@ -17,8 +19,8 @@ goto usage_error
 :parse_gurobi
 if "%~2"=="" goto missing_gurobi_value
 set "GUROBI_MODE=%~2"
-shift
-shift
+shift /1
+shift /1
 goto parse_arguments
 
 :arguments_done
@@ -103,11 +105,11 @@ echo ERROR: PrecPack tests failed. Review the test output above.
 exit /b 1
 
 :usage_error
-echo Usage: %~nx0 [--gurobi auto^|on^|off]
+echo Usage: %SCRIPT_NAME% [--gurobi auto^|on^|off]
 exit /b 2
 
 :help
-echo Usage: %~nx0 [--gurobi auto^|on^|off]
+echo Usage: %SCRIPT_NAME% [--gurobi auto^|on^|off]
 echo.
 echo Configure, build, and test PrecPack in Release mode.
 echo This Windows launcher calls CMake directly and does not require Python.

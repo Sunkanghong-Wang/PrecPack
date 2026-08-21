@@ -1,7 +1,8 @@
 @echo off
 setlocal EnableExtensions
 
-for %%I in ("%~dp0..\..") do set "REPOSITORY_ROOT=%%~fI"
+set "SCRIPT_DIRECTORY=%~dp0"
+for %%I in ("%SCRIPT_DIRECTORY%..\..") do set "REPOSITORY_ROOT=%%~fI"
 set "BINARY=%REPOSITORY_ROOT%\build\Release\precpack.exe"
 if exist "%BINARY%" goto binary_ready
 set "BINARY=%REPOSITORY_ROOT%\build\precpack.exe"

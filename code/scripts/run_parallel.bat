@@ -1,7 +1,9 @@
 @echo off
 setlocal EnableExtensions
 
-for %%I in ("%~dp0..\..") do set "REPOSITORY_ROOT=%%~fI"
+set "SCRIPT_DIRECTORY=%~dp0"
+set "SCRIPT_NAME=%~nx0"
+for %%I in ("%SCRIPT_DIRECTORY%..\..") do set "REPOSITORY_ROOT=%%~fI"
 set "OUTPUT_ROOT=%REPOSITORY_ROOT%\results\parallel-experiments"
 set "CHECK_ONLY=0"
 set "CHECK_OPTION="
@@ -18,21 +20,21 @@ goto usage_error
 :parse_output
 if "%~2"=="" goto missing_output
 set "OUTPUT_ROOT=%~2"
-shift
-shift
+shift /1
+shift /1
 goto parse_arguments
 
 :parse_check
 set "CHECK_ONLY=1"
 set "CHECK_OPTION=--check-only"
-shift
+shift /1
 goto parse_arguments
 
 :arguments_done
 for %%I in ("%OUTPUT_ROOT%") do set "OUTPUT_ROOT=%%~fI"
 set "PRECPACK_REQUIRE_GUROBI_RUNTIME=1"
 if "%CHECK_ONLY%"=="1" goto gurobi_check_done
-call "%~dp0run_batch.bat" --help | findstr /C:"Optional Gurobi root strengthening: enabled" >nul
+call "%SCRIPT_DIRECTORY%run_batch.bat" --help | findstr /C:"Optional Gurobi root strengthening: enabled" >nul
 if errorlevel 1 goto missing_gurobi
 
 :gurobi_check_done
@@ -76,11 +78,11 @@ goto success
 echo.
 echo [%~1, threads=%~4]
 if "%~5"=="" goto run_without_graph
-call "%~dp0run_batch.bat" --problem %~2 --input "%ITEM_DIRECTORY%" --graph-dir "%~5" --time-limit %~3 --memory-limit-mb 24576 --threads %~4 --output-dir "%OUTPUT_ROOT%\%~1\threads-%~4" %CHECK_OPTION%
+call "%SCRIPT_DIRECTORY%run_batch.bat" --problem %~2 --input "%ITEM_DIRECTORY%" --graph-dir "%~5" --time-limit %~3 --memory-limit-mb 24576 --threads %~4 --output-dir "%OUTPUT_ROOT%\%~1\threads-%~4" %CHECK_OPTION%
 exit /b %ERRORLEVEL%
 
 :run_without_graph
-call "%~dp0run_batch.bat" --problem %~2 --input "%ITEM_DIRECTORY%" --time-limit %~3 --memory-limit-mb 24576 --threads %~4 --output-dir "%OUTPUT_ROOT%\%~1\threads-%~4" %CHECK_OPTION%
+call "%SCRIPT_DIRECTORY%run_batch.bat" --problem %~2 --input "%ITEM_DIRECTORY%" --time-limit %~3 --memory-limit-mb 24576 --threads %~4 --output-dir "%OUTPUT_ROOT%\%~1\threads-%~4" %CHECK_OPTION%
 exit /b %ERRORLEVEL%
 
 :missing_output
@@ -104,9 +106,9 @@ exit /b 1
 exit /b 0
 
 :usage_error
-echo Usage: %~nx0 [--output-dir DIR] [--check-only]
+echo Usage: %SCRIPT_NAME% [--output-dir DIR] [--check-only]
 exit /b 2
 
 :help
-echo Usage: %~nx0 [--output-dir DIR] [--check-only]
+echo Usage: %SCRIPT_NAME% [--output-dir DIR] [--check-only]
 exit /b 0
