@@ -44,7 +44,7 @@ jobs:
           ./code/scripts/run_parallel.sh \
             --check-only \
             --output-dir "build/parallel launcher (smoke)&test"
-      - name: Test run launchers
+      - name: Test Windows examples
         if: runner.os == 'Windows'
         shell: cmd
         run: |
@@ -52,14 +52,15 @@ jobs:
           if errorlevel 1 exit /b 1
           call code\scripts\run_examples.bat --output-dir build\launcher-smoke
           if errorlevel 1 exit /b 1
-          mkdir "build\relative launcher"
-          copy /Y data\instances\otto\n_0020\instance_n=20_1.txt "build\relative launcher\local-instance.txt" >nul
-          if not exist "build\relative launcher\local-instance.txt" exit /b 1
-          pushd "build\relative launcher"
+      - name: Test Windows batch launcher
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call code\scripts\run_batch.bat --problem bpp-p --input data\instances\otto\n_0020\instance_n=20_1.txt --time-limit 10 --output-dir "build\batch launcher smoke" --check-only
           if errorlevel 1 exit /b 1
-          if not exist local-instance.txt exit /b 1
-          call ..\..\code\scripts\run_batch.bat --problem bpp-p --input local-instance.txt --time-limit 10 --output-dir "relative output"
-          if errorlevel 1 exit /b 1
-          popd
+      - name: Test Windows parallel launcher
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
           call code\scripts\run_parallel.bat --check-only --output-dir "build\parallel launcher (smoke)&test"
           if errorlevel 1 exit /b 1
