@@ -17,9 +17,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.9"
       - name: Build and test
         if: runner.os != 'Windows'
         run: ./code/scripts/build.sh --gurobi off
@@ -27,5 +24,38 @@ jobs:
         if: runner.os == 'Windows'
         shell: cmd
         run: call code\scripts\build.bat --gurobi off
-      - name: Test batch pairing
-        run: python code/scripts/test_run_batch.py
+      - name: Test run launchers
+        if: runner.os != 'Windows'
+        run: |
+          ./code/scripts/run_examples.sh --output-dir build/launcher-smoke
+          ./code/scripts/run_examples.sh --output-dir build/launcher-smoke
+          mkdir -p "build/relative launcher"
+          cp data/instances/otto/n_0020/instance_n=20_1.txt \
+            "build/relative launcher/local-instance.txt"
+          (
+            cd "build/relative launcher"
+            ../../code/scripts/run_batch.sh \
+              --problem bpp-p \
+              --input local-instance.txt \
+              --time-limit 10 \
+              --output-dir "relative output"
+          )
+          ./code/scripts/run_parallel.sh \
+            --check-only \
+            --output-dir "build/parallel launcher (smoke)&test"
+      - name: Test run launchers
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call code\scripts\run_examples.bat --output-dir build\launcher-smoke
+          if errorlevel 1 exit /b 1
+          call code\scripts\run_examples.bat --output-dir build\launcher-smoke
+          if errorlevel 1 exit /b 1
+          mkdir "build\relative launcher"
+          copy /Y data\instances\otto\n_0020\instance_n=20_1.txt "build\relative launcher\local-instance.txt" >nul
+          pushd "build\relative launcher"
+          call ..\..\code\scripts\run_batch.bat --problem bpp-p --input local-instance.txt --time-limit 10 --output-dir "relative output"
+          if errorlevel 1 exit /b 1
+          popd
+          call code\scripts\run_parallel.bat --check-only --output-dir "build\parallel launcher (smoke)&test"
+          if errorlevel 1 exit /b 1

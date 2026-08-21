@@ -214,7 +214,7 @@ public:
         conflict_edge_count_ = edges.size();
         conflict_masks_.assign(static_cast<std::size_t>(n_) * blocks_, 0U);
         degrees_.assign(static_cast<std::size_t>(n_), 0);
-        for (const auto [lhs, rhs] : edges) {
+        for (const auto& [lhs, rhs] : edges) {
             set_bit(conflict_row(lhs), rhs);
             set_bit(conflict_row(rhs), lhs);
             ++degrees_[static_cast<std::size_t>(lhs)];

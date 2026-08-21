@@ -13,11 +13,15 @@ namespace precpack {
 struct CommandLineOptions {
     std::filesystem::path instance_path;
     std::optional<std::filesystem::path> graph_path;
+    std::optional<std::filesystem::path> input_path;
+    std::optional<std::filesystem::path> graph_directory;
     std::filesystem::path output_directory = "results";
     ProblemKind problem = ProblemKind::kBppGp;
     double time_limit_seconds = 300.0;
     std::uint64_t memory_limit_mb = 24ULL * 1024ULL;
     int threads = 1;
+    bool batch_mode = false;
+    bool check_only = false;
     bool show_help = false;
 };
 

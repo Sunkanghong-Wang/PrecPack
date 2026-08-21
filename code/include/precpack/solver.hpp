@@ -6,4 +6,6 @@ namespace precpack {
 
 [[nodiscard]] Solution solve(const Instance& instance, const Config& config);
 
+void verify_gurobi_runtime();
+
 }

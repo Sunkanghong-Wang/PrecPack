@@ -1,19 +1,23 @@
 #include "precpack/build_config.hpp"
+#include "precpack/batch.hpp"
 #include "precpack/cli.hpp"
 #include "precpack/dff.hpp"
 #include "precpack/exact_arithmetic.hpp"
 #include "precpack/instance_io.hpp"
+#include "precpack/output_lock.hpp"
 #include "precpack/result_io.hpp"
 #include "precpack/solver_profile.hpp"
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -69,6 +73,45 @@ private:
     std::filesystem::path path_;
 };
 
+class ScopedEnvironment {
+public:
+    ScopedEnvironment(const char* name, const char* value) : name_(name) {
+        const char* previous = std::getenv(name);
+        if (previous != nullptr) {
+            previous_ = previous;
+        }
+#ifdef _WIN32
+        require(_putenv_s(name, value) == 0,
+                "cannot set test environment variable");
+#else
+        require(setenv(name, value, 1) == 0,
+                "cannot set test environment variable");
+#endif
+    }
+
+    ~ScopedEnvironment() {
+#ifdef _WIN32
+        static_cast<void>(_putenv_s(name_.c_str(),
+                                    previous_.has_value()
+                                        ? previous_->c_str()
+                                        : ""));
+#else
+        if (previous_.has_value()) {
+            static_cast<void>(setenv(name_.c_str(), previous_->c_str(), 1));
+        } else {
+            static_cast<void>(unsetenv(name_.c_str()));
+        }
+#endif
+    }
+
+    ScopedEnvironment(const ScopedEnvironment&) = delete;
+    ScopedEnvironment& operator=(const ScopedEnvironment&) = delete;
+
+private:
+    std::string name_;
+    std::optional<std::string> previous_;
+};
+
 void write_text_file(const std::filesystem::path& path,
                      std::string_view contents) {
     std::ofstream output(path, std::ios::binary);
@@ -113,6 +156,8 @@ void test_public_defaults() {
     require(options.threads == 1, "public thread default changed");
     require(options.output_directory == "results",
             "public output-directory default changed");
+    require(!options.batch_mode && !options.check_only,
+            "single-instance mode unexpectedly enabled batch behavior");
 }
 
 void test_exact_arithmetic() {
@@ -196,6 +241,179 @@ void test_public_validation() {
         rejected_zero_threads = true;
     }
     require(rejected_zero_threads, "zero worker threads were accepted");
+
+    const precpack::CommandLineOptions batch = parse(
+        {"precpack", "--batch", "--problem", "bpp-gp", "--input",
+         "items", "--graph-dir", "graphs", "--check-only"});
+    require(batch.batch_mode && batch.check_only &&
+                batch.input_path == std::filesystem::path("items") &&
+                batch.graph_directory == std::filesystem::path("graphs") &&
+                batch.output_directory ==
+                    std::filesystem::path("results/bpp-gp"),
+            "batch command-line parsing failed");
+
+    bool rejected_mixed_inputs = false;
+    try {
+        static_cast<void>(parse(
+            {"precpack", "--batch", "--problem", "bpp-p", "--instance",
+             "case.txt"}));
+    } catch (const std::invalid_argument&) {
+        rejected_mixed_inputs = true;
+    }
+    require(rejected_mixed_inputs,
+            "batch mode accepted the single-instance interface");
+}
+
+void test_batch_pairing() {
+    TemporaryDirectory temporary_directory;
+    const std::filesystem::path& root = temporary_directory.path();
+    const std::filesystem::path instance_root = root / "instances";
+    const std::filesystem::path graph_root = root / "graphs";
+    const std::filesystem::path instance =
+        instance_root / "otto" / "n_0020" / "case.txt";
+    const std::filesystem::path graph_01 =
+        graph_root / "separation-01" / "n_0020" / "case.graph";
+    const std::filesystem::path graph_03 =
+        graph_root / "separation-03" / "n_0020" / "case.graph";
+    std::filesystem::create_directories(instance.parent_path());
+    std::filesystem::create_directories(graph_01.parent_path());
+    std::filesystem::create_directories(graph_03.parent_path());
+    write_text_file(instance, "instance");
+    write_text_file(graph_01, "graph");
+    write_text_file(graph_03, "graph");
+
+    const auto canonical = [](const std::filesystem::path& path) {
+        return std::filesystem::weakly_canonical(path);
+    };
+    const std::vector<precpack::BatchCase> file_pair =
+        precpack::collect_batch_cases(
+            precpack::ProblemKind::kBppGp, instance, graph_01,
+            instance_root, graph_root);
+    require(file_pair.size() == 1U &&
+                file_pair.front().instance_path == canonical(instance) &&
+                file_pair.front().graph_path == canonical(graph_01),
+            "single BPP-GP instance/graph pairing failed");
+
+    const std::vector<precpack::BatchCase> file_with_graph_collection =
+        precpack::collect_batch_cases(
+            precpack::ProblemKind::kBppGp, instance, graph_root,
+            instance_root, graph_root);
+    require(file_with_graph_collection.size() == 2U,
+            "single BPP-GP instance/graph-collection pairing failed");
+
+    const std::vector<precpack::BatchCase> size_pair =
+        precpack::collect_batch_cases(
+            precpack::ProblemKind::kBppGp,
+            instance_root / "otto" / "n_0020",
+            graph_root / "separation-01" / "n_0020", instance_root,
+            graph_root);
+    require(size_pair.size() == 1U &&
+                size_pair.front().graph_path == canonical(graph_01),
+            "same-size BPP-GP directory pairing failed");
+
+    const std::vector<precpack::BatchCase> collection_with_graph_file =
+        precpack::collect_batch_cases(
+            precpack::ProblemKind::kBppGp, instance_root / "otto", graph_01,
+            instance_root, graph_root);
+    require(collection_with_graph_file.size() == 1U &&
+                collection_with_graph_file.front().instance_path ==
+                    canonical(instance),
+            "BPP-GP instance-collection/single-graph pairing failed");
+
+    const std::vector<precpack::BatchCase> default_pairs =
+        precpack::collect_batch_cases(precpack::ProblemKind::kBppGp,
+                                      std::nullopt, std::nullopt,
+                                      instance_root, graph_root);
+    require(default_pairs.size() == 2U &&
+                default_pairs[0].graph_path == canonical(graph_01) &&
+                default_pairs[1].graph_path == canonical(graph_03),
+            "default BPP-GP collection pairing failed");
+
+    bool rejected_mismatch = false;
+    const std::filesystem::path other_graph =
+        graph_root / "separation-01" / "n_0020" / "other.graph";
+    write_text_file(other_graph, "graph");
+    try {
+        static_cast<void>(precpack::collect_batch_cases(
+            precpack::ProblemKind::kBppGp, instance, other_graph,
+            instance_root, graph_root));
+    } catch (const std::invalid_argument&) {
+        rejected_mismatch = true;
+    }
+    require(rejected_mismatch,
+            "mismatched BPP-GP instance and graph were accepted");
+}
+
+void test_batch_resume_profile() {
+    TemporaryDirectory temporary_directory;
+    const std::filesystem::path instance_path =
+        temporary_directory.path() / "items" / "case.txt";
+    const std::filesystem::path output_directory =
+        temporary_directory.path() / "results";
+    std::filesystem::create_directories(instance_path.parent_path());
+    write_text_file(instance_path, "instance");
+    const std::filesystem::path canonical_instance =
+        std::filesystem::weakly_canonical(instance_path);
+    const std::string key =
+        precpack::make_instance_key(canonical_instance, std::nullopt);
+    const std::filesystem::path solution_reference =
+        std::filesystem::path("solutions") / ("bpp-p__" + key + ".sol");
+    std::filesystem::create_directories(
+        (output_directory / solution_reference).parent_path());
+    write_text_file(output_directory / solution_reference, "Bin 1: 1\n");
+
+    precpack::Instance instance;
+    instance.problem_type = "BPP-P";
+    instance.capacity = 10;
+    instance.items = {{0, 5}};
+    precpack::Solution solution;
+    solution.status = precpack::SolveStatus::kOptimal;
+    solution.optimal = true;
+    solution.lower_bound = 1;
+    solution.upper_bound = 1;
+    solution.threads = 1;
+    solution.bbr_stats.time_limit_seconds = 60.0;
+    solution.bbr_stats.configured_state_limit = 60'000'000ULL;
+    solution.bbr_stats.memory_limit_bytes = 512ULL * 1024ULL * 1024ULL;
+    precpack::append_result_csv(
+        output_directory / "BPP-P_Results.csv", key, canonical_instance,
+        std::nullopt, instance, solution, solution_reference);
+
+    precpack::CommandLineOptions options;
+    options.batch_mode = true;
+    options.check_only = true;
+    options.problem = precpack::ProblemKind::kBppP;
+    options.input_path = canonical_instance;
+    options.output_directory = output_directory;
+    options.time_limit_seconds = 60.0;
+    options.memory_limit_mb = 512U;
+    options.threads = 1;
+    require(precpack::run_batch(options) == 0,
+            "a compatible completed batch result was not resumed");
+
+    options.threads = 2;
+    bool rejected_profile_mismatch = false;
+    try {
+        static_cast<void>(precpack::run_batch(options));
+    } catch (const std::runtime_error&) {
+        rejected_profile_mismatch = true;
+    }
+    require(rejected_profile_mismatch,
+            "batch resume accepted a mismatched thread profile");
+
+    options.threads = 1;
+    bool rejected_gurobi_profile = false;
+    {
+        ScopedEnvironment strict_gurobi(
+            "PRECPACK_REQUIRE_GUROBI_RUNTIME", "1");
+        try {
+            static_cast<void>(precpack::run_batch(options));
+        } catch (const std::runtime_error&) {
+            rejected_gurobi_profile = true;
+        }
+    }
+    require(rejected_gurobi_profile,
+            "batch resume mixed strict and optional Gurobi profiles");
 }
 
 void test_instance_file_validation() {
@@ -353,6 +571,7 @@ void test_output_schema() {
     precpack::Solution solution;
     solution.status = precpack::SolveStatus::kOptimal;
     solution.optimal = true;
+    solution.gurobi_runtime_required = true;
     solution.lower_bound = 2;
     solution.upper_bound = 2;
     solution.relative_gap = 0.0;
@@ -374,13 +593,47 @@ void test_output_schema() {
         "instance_key,problem,instance_file,graph_file,n,capacity,status,"
         "lower_bound,upper_bound,gap,time_seconds,time_limit_seconds,threads,"
         "state_limit,memory_limit_mb,bbr_peak_memory_bytes,gurobi_enabled,"
-        "solution_file\n"
+        "gurobi_required,solution_file\n"
         "\"case,1\",BPP-P,\"data/case,1.txt\",,3,10,OPTIMAL,2,2,0,1.25,"
         "60,4,60000000,512,123456," +
         std::string(precpack::kHasGurobiSupport ? "1" : "0") +
-        ",solutions/case.sol\n";
+        ",1,solutions/case.sol\n";
     require(read_text_file(csv_path) == expected_csv,
             "result CSV schema or serialization changed");
+    const std::vector<precpack::ResultReference> references =
+        precpack::read_result_references(csv_path);
+    require(references.size() == 1U &&
+                references.front().instance_key == "case,1" &&
+                references.front().problem == "BPP-P" &&
+                std::abs(references.front().time_limit_seconds - 60.0) <
+                    1e-12 &&
+                references.front().threads == 4 &&
+                references.front().state_limit == 60'000'000ULL &&
+                references.front().memory_limit_mb == 512U &&
+                references.front().gurobi_enabled ==
+                    precpack::kHasGurobiSupport &&
+                references.front().gurobi_required &&
+                references.front().solution_file == "solutions/case.sol",
+            "result CSV references were not parsed correctly");
+
+    const std::filesystem::path malformed_result_path =
+        temporary_directory.path() / "malformed-result.csv";
+    std::string malformed_result = expected_csv;
+    const std::size_t time_field =
+        malformed_result.find(",60,4,60000000,512,");
+    require(time_field != std::string::npos,
+            "test result row no longer contains the expected profile fields");
+    malformed_result.replace(time_field, 4U, ",,");
+    write_text_file(malformed_result_path, malformed_result);
+    bool rejected_malformed_result = false;
+    try {
+        static_cast<void>(
+            precpack::read_result_references(malformed_result_path));
+    } catch (const std::runtime_error&) {
+        rejected_malformed_result = true;
+    }
+    require(rejected_malformed_result,
+            "a result row with an empty time limit was accepted");
     require(read_text_file(assignment_path) ==
                 "Bin 1: 1 2\nBin 2: 3\n",
             "assignment file contains redundant metadata or changed format");
@@ -400,6 +653,27 @@ void test_output_schema() {
             "an incompatible result CSV schema was silently appended");
 }
 
+void test_output_lock() {
+    TemporaryDirectory temporary_directory;
+    const std::filesystem::path output_directory =
+        temporary_directory.path() / "results";
+    {
+        precpack::OutputLock first(output_directory);
+        bool rejected_second = false;
+        try {
+            precpack::OutputLock second(output_directory);
+        } catch (const std::runtime_error&) {
+            rejected_second = true;
+        }
+        require(rejected_second,
+                "two writers acquired the same output-directory lock");
+    }
+    precpack::OutputLock reacquired(output_directory);
+    require(std::filesystem::is_regular_file(
+                output_directory / ".precpack.lock"),
+            "output lock file was not retained for race-free reuse");
+}
+
 }
 
 int main() {
@@ -407,10 +681,13 @@ int main() {
         test_public_defaults();
         test_exact_arithmetic();
         test_public_validation();
+        test_batch_pairing();
+        test_batch_resume_profile();
         test_instance_file_validation();
         test_bpp_profile();
         test_parallel_profile();
         test_salbp_profile();
+        test_output_lock();
         test_output_schema();
         std::cout << "Public interface tests passed\n";
         return 0;

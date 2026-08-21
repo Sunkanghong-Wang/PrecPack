@@ -15,6 +15,7 @@ enum class ProblemKind {
 
 [[nodiscard]] ProblemKind parse_problem_kind(std::string_view value);
 [[nodiscard]] const char* to_string(ProblemKind problem) noexcept;
+[[nodiscard]] const char* to_slug(ProblemKind problem) noexcept;
 
 [[nodiscard]] Config make_solver_config(
     ProblemKind problem,

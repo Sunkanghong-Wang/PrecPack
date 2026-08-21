@@ -115,7 +115,7 @@ void Instance::initialize() {
 
     front.assign(static_cast<std::size_t>(n), 0);
     for (const int current : topological_order) {
-        for (const auto [next, distance] :
+        for (const auto& [next, distance] :
              successor_arcs[static_cast<std::size_t>(current)]) {
             front[static_cast<std::size_t>(next)] =
                 std::max(front[static_cast<std::size_t>(next)],
@@ -126,7 +126,7 @@ void Instance::initialize() {
     back.assign(static_cast<std::size_t>(n), 0);
     for (auto it = topological_order.rbegin(); it != topological_order.rend(); ++it) {
         const int current = *it;
-        for (const auto [next, distance] :
+        for (const auto& [next, distance] :
              successor_arcs[static_cast<std::size_t>(current)]) {
             back[static_cast<std::size_t>(current)] =
                 std::max(back[static_cast<std::size_t>(current)],
@@ -144,7 +144,7 @@ void Instance::initialize() {
             if (distance[static_cast<std::size_t>(current)] == kUnreachable) {
                 continue;
             }
-            for (const auto [next, arc_distance] :
+            for (const auto& [next, arc_distance] :
                  successor_arcs[static_cast<std::size_t>(current)]) {
                 distance[static_cast<std::size_t>(next)] =
                     std::max(distance[static_cast<std::size_t>(next)],

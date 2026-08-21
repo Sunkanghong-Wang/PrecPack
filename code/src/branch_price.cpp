@@ -186,7 +186,7 @@ struct CompiledNode {
     bool position_indexed = true) {
     const int n = instance.size();
     DisjointSet sets(n);
-    for (const auto [lhs, rhs] : node.together) {
+    for (const auto& [lhs, rhs] : node.together) {
         sets.unite(lhs, rhs);
     }
 
@@ -225,10 +225,10 @@ struct CompiledNode {
         result.conflict_matrix[static_cast<std::size_t>(rhs) * component_count +
                                static_cast<std::size_t>(lhs)] = 1U;
     };
-    for (const auto [lhs, rhs] : base_conflicts) {
+    for (const auto& [lhs, rhs] : base_conflicts) {
         add_conflict(lhs, rhs);
     }
-    for (const auto [lhs, rhs] : node.separate) {
+    for (const auto& [lhs, rhs] : node.separate) {
         add_conflict(lhs, rhs);
     }
     result.conflict_neighbors.assign(static_cast<std::size_t>(component_count), {});
@@ -572,7 +572,7 @@ public:
         }
         std::vector<int> result;
         result.reserve(violations.size());
-        for (const auto [violation, index] : violations) {
+        for (const auto& [violation, index] : violations) {
             static_cast<void>(violation);
             result.push_back(index);
         }

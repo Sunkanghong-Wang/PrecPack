@@ -44,7 +44,7 @@ enum class FitRule { kFirst, kBest };
         ready.pop();
 
         int earliest_bin = 0;
-        for (const auto [predecessor, separation] :
+        for (const auto& [predecessor, separation] :
              instance.predecessor_arcs[static_cast<std::size_t>(item)]) {
             earliest_bin = std::max(
                 earliest_bin,
@@ -114,7 +114,7 @@ enum class FitRule { kFirst, kBest };
                     continue;
                 }
                 bool feasible = true;
-                for (const auto [predecessor, separation] :
+                for (const auto& [predecessor, separation] :
                      instance.predecessor_arcs[static_cast<std::size_t>(item)]) {
                     if (candidate - assignment.bin_of_item[static_cast<std::size_t>(
                                           predecessor)] <
@@ -124,7 +124,7 @@ enum class FitRule { kFirst, kBest };
                     }
                 }
                 if (feasible) {
-                    for (const auto [successor, separation] :
+                    for (const auto& [successor, separation] :
                          instance.successor_arcs[static_cast<std::size_t>(item)]) {
                         if (assignment.bin_of_item[static_cast<std::size_t>(successor)] -
                                 candidate <

@@ -61,6 +61,7 @@ find_package(Threads REQUIRED)
 
 set(PRECPACK_CORE_SOURCES
     src/algorithms.cpp
+    src/batch.cpp
     src/bbr.cpp
     src/bin_packing_bound.cpp
     src/cli.cpp
@@ -69,6 +70,7 @@ set(PRECPACK_CORE_SOURCES
     src/dff.cpp
     src/initial_bounds.cpp
     src/instance_io.cpp
+    src/output_lock.cpp
     src/result_io.cpp
     src/solver.cpp
     src/solver_profile.cpp

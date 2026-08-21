@@ -256,6 +256,10 @@ void accumulate_preliminary_bbr_statistics(
 Solution solve(const Instance& instance, const Config& requested_config) {
     Config config = requested_config;
 #if !PRECPACK_HAS_GUROBI
+    if (config.require_gurobi_runtime) {
+        throw std::runtime_error(
+            "this run requires Gurobi, but this build excludes it");
+    }
     if (config.exact_method != ExactMethod::kBbr ||
         config.root_comparison_mode) {
         throw std::invalid_argument(
@@ -274,6 +278,7 @@ Solution solve(const Instance& instance, const Config& requested_config) {
     const auto solve_start = std::chrono::steady_clock::now();
     Deadline deadline(config.time_limit_seconds);
     Solution solution;
+    solution.gurobi_runtime_required = config.require_gurobi_runtime;
     solution.threads = resolve_thread_count(config.threads);
     solution.exact_method = config.exact_method;
     solution.root_model = config.root_model;
@@ -567,6 +572,9 @@ Solution solve(const Instance& instance, const Config& requested_config) {
             solution.root_lp_value = solution.root_stats.lp_value;
         }
     } catch (const GRBException&) {
+        if (config.require_gurobi_runtime) {
+            throw;
+        }
         optional_root_backend_failed = true;
         environment.reset();
         config.bbr_root_cg_mode = BbrRootCgMode::kNone;
@@ -907,6 +915,18 @@ Solution solve(const Instance& instance, const Config& requested_config) {
         std::chrono::duration<double>(std::chrono::steady_clock::now() - solve_start)
             .count();
     return solution;
+}
+
+void verify_gurobi_runtime() {
+#if PRECPACK_HAS_GUROBI
+    GRBEnv environment(true);
+    environment.set(GRB_IntParam_OutputFlag, 0);
+    environment.set(GRB_IntParam_Threads, 1);
+    environment.start();
+#else
+    throw std::runtime_error(
+        "this run requires Gurobi, but this build excludes it");
+#endif
 }
 
 }

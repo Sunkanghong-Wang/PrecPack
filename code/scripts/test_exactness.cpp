@@ -109,7 +109,7 @@ void test_no_gurobi_public_profiles() {
             "strengthening");
 
     require_exact_solution(
-        precpack::read_instance(root / "data/instances/scholl269/"
+        precpack::read_instance(root / "data/instances/scholl/"
                                        "Jackson/Jackson_c7.txt",
                                 std::nullopt, "SALBP-I"),
         precpack::ProblemKind::kSalbpI, 8);
@@ -359,7 +359,7 @@ void test_bbr12_mhh_bounded_portfolio() {
         std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
     const precpack::Instance instance = precpack::read_instance(
         repository_root /
-            "data/instances/scholl269/Barthol2/Barthol2_c146.txt",
+            "data/instances/scholl/Barthol2/Barthol2_c146.txt",
         std::nullopt, "SALBP-I", 56);
     const auto forbidden_environment = []() -> GRBEnv& {
         throw std::logic_error(
@@ -1656,7 +1656,7 @@ void test_bbr_precpack_unified_startup() {
         const int item =
             instance.topological_order[static_cast<std::size_t>(position)];
         int earliest = 0;
-        for (const auto [predecessor, separation] :
+        for (const auto& [predecessor, separation] :
              instance.predecessor_arcs[static_cast<std::size_t>(item)]) {
             earliest = std::max(
                 earliest,

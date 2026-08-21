@@ -35,6 +35,18 @@ const char* to_string(ProblemKind problem) noexcept {
     return "UNKNOWN";
 }
 
+const char* to_slug(ProblemKind problem) noexcept {
+    switch (problem) {
+        case ProblemKind::kSalbpI:
+            return "salbp-i";
+        case ProblemKind::kBppP:
+            return "bpp-p";
+        case ProblemKind::kBppGp:
+            return "bpp-gp";
+    }
+    return "unknown";
+}
+
 Config make_solver_config(ProblemKind problem,
                           double time_limit_seconds,
                           std::uint64_t memory_limit_mb,

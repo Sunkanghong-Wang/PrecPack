@@ -316,6 +316,7 @@ struct Solution {
     SolveStatus status = SolveStatus::kNotSolved;
     std::string status_detail;
     bool optimal = false;
+    bool gurobi_runtime_required = false;
     int lb1 = 0;
     int lb2 = 0;
     int lb3 = 0;
@@ -354,6 +355,7 @@ struct Config {
     bool set_covering_master = false;
     bool enable_sr_cuts = true;
     bool gurobi_log = false;
+    bool require_gurobi_runtime = false;
     ExactMethod exact_method = ExactMethod::kBbr;
     // State and memory limits are global across all BBR workers.
     std::uint64_t bbr_state_limit = 60'000'000ULL;

@@ -491,7 +491,7 @@ private:
                                                   0);
         std::vector<std::int64_t> global_tail(static_cast<std::size_t>(n), 0);
         for (const int item : instance.topological_order) {
-            for (const auto [predecessor, separation] :
+            for (const auto& [predecessor, separation] :
                  instance.predecessor_arcs[static_cast<std::size_t>(item)]) {
                 global_earliest[static_cast<std::size_t>(item)] = std::max(
                     global_earliest[static_cast<std::size_t>(item)],
@@ -502,7 +502,7 @@ private:
         for (auto order = instance.topological_order.rbegin();
              order != instance.topological_order.rend(); ++order) {
             const int item = *order;
-            for (const auto [successor, separation] :
+            for (const auto& [successor, separation] :
                  instance.successor_arcs[static_cast<std::size_t>(item)]) {
                 global_tail[static_cast<std::size_t>(item)] = std::max(
                     global_tail[static_cast<std::size_t>(item)],
@@ -3197,7 +3197,7 @@ private:
                 continue;
             }
             int earliest = cooldown_release(key, item);
-            for (const auto [predecessor, separation] :
+            for (const auto& [predecessor, separation] :
                  instance_.predecessor_arcs[static_cast<std::size_t>(item)]) {
                 if (!bit_is_set(assigned, predecessor)) {
                     earliest = std::max(
@@ -3215,7 +3215,7 @@ private:
                 continue;
             }
             int tail = 0;
-            for (const auto [successor, separation] :
+            for (const auto& [successor, separation] :
                  instance_.successor_arcs[static_cast<std::size_t>(item)]) {
                 if (!bit_is_set(assigned, successor)) {
                     tail = std::max(

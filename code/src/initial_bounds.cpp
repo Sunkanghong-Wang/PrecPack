@@ -2387,7 +2387,8 @@ private:
             current_weights_[static_cast<std::size_t>(parent)];
         current_parent_count_ = current_counts_[static_cast<std::size_t>(parent)];
         std::fill(load_mask_.begin(), load_mask_.end(), 0U);
-        std::fill(status_.begin(), status_.end(), 3U);
+        std::fill(status_.begin(), status_.end(),
+                  static_cast<unsigned char>(3));
         std::fill(remaining_zero_predecessors_.begin(),
                   remaining_zero_predecessors_.end(), 0);
         std::fill(ready_rank_mask_.begin(), ready_rank_mask_.end(), 0U);

@@ -2,13 +2,17 @@
 
 #include "precpack/build_config.hpp"
 
+#include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <utility>
 
 namespace precpack {
 namespace {
@@ -17,7 +21,8 @@ inline constexpr const char* kResultHeader =
     "instance_key,problem,instance_file,graph_file,n,capacity,status,"
     "lower_bound,upper_bound,gap,time_seconds,time_limit_seconds,threads,"
     "state_limit,memory_limit_mb,bbr_peak_memory_bytes,gurobi_enabled,"
-    "solution_file";
+    "gurobi_required,solution_file";
+inline constexpr std::size_t kResultColumnCount = 19U;
 
 [[nodiscard]] std::string csv_field(std::string_view value) {
     if (value.find_first_of(",\"\r\n") == std::string_view::npos) {
@@ -44,8 +49,14 @@ inline constexpr const char* kResultHeader =
     }
 
     std::error_code error;
-    const std::filesystem::path current =
-        std::filesystem::current_path(error).lexically_normal();
+    std::filesystem::path current;
+    const char* repository = std::getenv("PRECPACK_REPOSITORY_ROOT");
+    if (repository != nullptr && *repository != '\0') {
+        current =
+            std::filesystem::absolute(repository, error).lexically_normal();
+    } else {
+        current = std::filesystem::current_path(error).lexically_normal();
+    }
     if (!error) {
         const std::filesystem::path relative =
             normalized.lexically_relative(current);
@@ -94,6 +105,106 @@ void require_compatible_header(const std::filesystem::path& path) {
             "existing result CSV has an incompatible header: " +
             path.string());
     }
+}
+
+bool read_csv_record(std::istream& input, std::vector<std::string>& fields) {
+    fields.clear();
+    std::string field;
+    bool quoted = false;
+    bool quote_closed = false;
+    bool consumed = false;
+    char character = '\0';
+    while (input.get(character)) {
+        consumed = true;
+        if (quoted) {
+            if (character != '"') {
+                field += character;
+                continue;
+            }
+            if (input.peek() == '"') {
+                static_cast<void>(input.get(character));
+                field += '"';
+                continue;
+            }
+            quoted = false;
+            quote_closed = true;
+            continue;
+        }
+        if (character == ',') {
+            fields.push_back(std::move(field));
+            field.clear();
+            quote_closed = false;
+        } else if (character == '\n' || character == '\r') {
+            if (character == '\r' && input.peek() == '\n') {
+                static_cast<void>(input.get(character));
+            }
+            fields.push_back(std::move(field));
+            return true;
+        } else if (character == '"') {
+            if (!field.empty() || quote_closed) {
+                throw std::runtime_error("malformed quoted CSV field");
+            }
+            quoted = true;
+        } else {
+            if (quote_closed) {
+                throw std::runtime_error(
+                    "unexpected characters after a quoted CSV field");
+            }
+            field += character;
+        }
+    }
+    if (quoted) {
+        throw std::runtime_error("unterminated quoted CSV field");
+    }
+    if (!consumed && field.empty() && fields.empty()) {
+        return false;
+    }
+    fields.push_back(std::move(field));
+    return true;
+}
+
+[[nodiscard]] std::uint64_t parse_unsigned_csv_field(
+    const std::string& value,
+    std::string_view column,
+    std::size_t row,
+    const std::filesystem::path& path) {
+    std::size_t parsed = 0U;
+    std::uint64_t result = 0U;
+    bool converted = true;
+    try {
+        result = std::stoull(value, &parsed);
+    } catch (const std::exception&) {
+        converted = false;
+    }
+    if (!converted || value.empty() || value.front() == '-' ||
+        value.front() == '+' || parsed != value.size()) {
+        throw std::runtime_error(
+            "invalid " + std::string(column) + " in result CSV row " +
+            std::to_string(row) + ": " + path.string());
+    }
+    return result;
+}
+
+[[nodiscard]] double parse_double_csv_field(
+    const std::string& value,
+    std::string_view column,
+    std::size_t row,
+    const std::filesystem::path& path) {
+    std::size_t parsed = 0U;
+    double result = 0.0;
+    bool converted = true;
+    try {
+        result = std::stod(value, &parsed);
+    } catch (const std::exception&) {
+        converted = false;
+    }
+    if (!converted || value.empty() || parsed != value.size() ||
+        !std::isfinite(result)) {
+        throw std::runtime_error(
+            "invalid " + std::string(column) + " in result CSV row " +
+            std::to_string(row) + ": " + path.string());
+    }
+    return result;
 }
 
 }
@@ -156,6 +267,7 @@ void append_result_csv(const std::filesystem::path& path,
            << memory_limit_mb << ','
            << solution.bbr_stats.peak_memory_bytes << ','
            << (kHasGurobiSupport ? 1 : 0) << ','
+           << (solution.gurobi_runtime_required ? 1 : 0) << ','
            << csv_field(assignment_path.generic_string()) << '\n';
 }
 
@@ -183,6 +295,77 @@ void write_assignment(const std::filesystem::path& path,
         }
         output << '\n';
     }
+}
+
+std::vector<ResultReference> read_result_references(
+    const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) {
+        return {};
+    }
+    if (!std::filesystem::is_regular_file(path)) {
+        throw std::runtime_error("result CSV is not a file: " + path.string());
+    }
+    if (std::filesystem::file_size(path) == 0U) {
+        return {};
+    }
+    require_compatible_header(path);
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("cannot read result CSV: " + path.string());
+    }
+    std::string header;
+    std::getline(input, header);
+
+    std::vector<ResultReference> references;
+    std::vector<std::string> fields;
+    std::size_t row = 1U;
+    while (read_csv_record(input, fields)) {
+        ++row;
+        if (fields.size() != kResultColumnCount || fields.front().empty() ||
+            fields.back().empty()) {
+            throw std::runtime_error(
+                "malformed result CSV row " + std::to_string(row) + ": " +
+                path.string());
+        }
+        const std::uint64_t threads = parse_unsigned_csv_field(
+            fields[12], "threads", row, path);
+        if (threads == 0U ||
+            threads > static_cast<std::uint64_t>(
+                          std::numeric_limits<int>::max())) {
+            throw std::runtime_error(
+                "invalid threads in result CSV row " + std::to_string(row) +
+                ": " + path.string());
+        }
+        const std::uint64_t gurobi = parse_unsigned_csv_field(
+            fields[16], "gurobi_enabled", row, path);
+        if (gurobi > 1U) {
+            throw std::runtime_error(
+                "invalid gurobi_enabled in result CSV row " +
+                std::to_string(row) + ": " + path.string());
+        }
+        const std::uint64_t gurobi_required = parse_unsigned_csv_field(
+            fields[17], "gurobi_required", row, path);
+        if (gurobi_required > 1U) {
+            throw std::runtime_error(
+                "invalid gurobi_required in result CSV row " +
+                std::to_string(row) + ": " + path.string());
+        }
+        references.push_back(ResultReference{
+            fields[0],
+            fields[1],
+            parse_double_csv_field(fields[11], "time_limit_seconds", row,
+                                   path),
+            static_cast<int>(threads),
+            parse_unsigned_csv_field(fields[13], "state_limit", row, path),
+            parse_unsigned_csv_field(fields[14], "memory_limit_mb", row,
+                                     path),
+            gurobi == 1U,
+            gurobi_required == 1U,
+            fields[18],
+        });
+    }
+    return references;
 }
 
 }

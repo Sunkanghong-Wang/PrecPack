@@ -24,11 +24,11 @@ PrecPack minimizes the number of positions from position 0 through the last used
 | --- | --- | ---: |
 | `instances/otto/n_XXXX/` | Shared Otto base instances for $n\in\{20,50,100,250,500,750,1000\}$ | 3,675 |
 | `instances/otto/n_0050_permuted/` | Nine additional task-order permutations of each Otto-50 instance | 4,725 |
-| `instances/scholl269/` | Shared classical Scholl instances | 269 |
+| `instances/scholl/` | Shared classical Scholl instances | 269 |
 | `bpp-gp-graphs/separation-01/n_XXXX/` | Labeled graphs with separations in $\{0,1\}$ | 3,675 |
 | `bpp-gp-graphs/separation-03/n_XXXX/` | Labeled graphs with separations in $\{0,1,2,3\}$ | 3,675 |
 
-The `.txt` files are shared across problem types. BPP-P uses the seven Otto base groups and Scholl269. SALBP-I uses those same files together with `n_0050_permuted`. BPP-GP pairs the Otto base files with one of the two families under `bpp-gp-graphs/`. Problem semantics are selected by `--problem`; no symbolic links or duplicate instance files are required.
+The `.txt` files are shared across problem types. BPP-P uses the seven Otto base groups and the Scholl collection. SALBP-I uses those same files together with `n_0050_permuted`. BPP-GP pairs the Otto base files with one of the two families under `bpp-gp-graphs/`. Problem semantics are selected by `--problem`; no symbolic links or duplicate instance files are required.
 
 ## Instance `.txt` format
 

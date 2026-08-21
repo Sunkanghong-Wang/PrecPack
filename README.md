@@ -118,10 +118,9 @@ The requirements below are derived from the checked-in source and build files, n
 | Operating system | 64-bit macOS, Linux, or Windows | Supported by the supplied CMake and launcher workflows. |
 | C++ compiler and standard library | Full C++20 support | PrecPack uses C++20 library features, including `<bit>` operations and associative-container `contains()`. |
 | CMake | 3.20 or newer | Enforced by `cmake_minimum_required(VERSION 3.20)`. |
-| Python | 3.9 or newer | Required only by the convenience scripts; the solver executable does not require Python. |
 | Gurobi Optimizer | Optional; 9.1 through 13.x | Used only for optional root strengthening and small-instance reference checks. The build reads the installed version from `gurobi_c.h`; 9.1.1 and 13.0.2 are the currently tested versions. |
 
-PrecPack has no mandatory mathematical-programming-solver dependency. A C++20 compiler, CMake, and the operating-system thread library are sufficient to build the exact solver. Python is only a launcher convenience.
+PrecPack has no mandatory mathematical-programming-solver dependency. A C++20 compiler, CMake, and the operating-system thread library are sufficient to build and run the exact solver and its supplied launchers.
 
 ### Optional Gurobi acceleration
 
@@ -164,6 +163,8 @@ Windows Command Prompt:
 ```bat
 code\scripts\build.bat --gurobi off
 ```
+
+The macOS, Linux, and Windows build launchers call CMake directly. They print the CMake configuration, compilation, and test phases, and report a specific error when CMake is unavailable or a phase fails. None of the build or run launchers requires Python.
 
 Omit `--gurobi off` to use the default `AUTO` detection. To require the optional Gurobi backend, set `GUROBI_HOME` and use `--gurobi on`:
 
@@ -213,7 +214,7 @@ code\scripts\run_examples.bat
 
 Example outputs are written below `results/examples/`, which is ignored by Git.
 
-The solver interface is:
+The single-instance solver interface is:
 
 ```text
 precpack --problem TYPE --instance FILE [options]
@@ -224,12 +225,21 @@ The public command line contains only problem semantics, input locations, resour
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `--problem` | `salbp-i`, `bpp-p`, or `bpp-gp` | required |
-| `--instance` | Input ALB-format `.txt` file | required |
-| `--graph` | Labeled `.graph` file | required for BPP-GP only |
+| `--instance` | Input ALB-format `.txt` file | required in single-instance mode |
+| `--graph` | Labeled `.graph` file | required for single-instance BPP-GP only |
 | `--time-limit` | Global wall-clock limit in seconds | `300` |
 | `--memory-limit-mb` | Global memory cap used by BBR accounting | `24576` |
 | `--threads` | Exact BBR workers; `-1` uses the available hardware concurrency | `1` |
-| `--output-dir` | Directory for `<PROBLEM>_Results.csv` and `solutions/` | `results` |
+| `--output-dir` | Directory for `<PROBLEM>_Results.csv` and `solutions/` | `results` for one instance; `results/<problem>` for a batch |
+
+The same executable provides a sequential, resume-safe batch mode used by the supplied launchers:
+
+| Batch option | Meaning | Default |
+| --- | --- | --- |
+| `--batch` | Enable sequential batch selection and execution | off |
+| `--input` | Input `.txt` file or directory | complete bundled collection for the problem |
+| `--graph-dir` | BPP-GP `.graph` file or directory | both bundled graph families |
+| `--check-only` | Validate the selection and compatible existing output without solving | off |
 
 The deterministic seed is fixed to 1, and the production remembered-state cap is fixed to 60,000,000. In parallel runs this is one global cap, not 60,000,000 states per worker. `--threads -1` uses `std::thread::hardware_concurrency()` and falls back to one worker if the platform cannot report it. A time-, state-, or memory-limited run still writes its validated incumbent and certified lower bound; only `status=OPTIMAL` certifies optimality. Every run appends its metadata and summary statistics to `SALBP-I_Results.csv`, `BPP-P_Results.csv`, or `BPP-GP_Results.csv`, according to the selected problem. The corresponding `.sol` file below `solutions/` contains only the bin assignment, avoiding duplicated data in large benchmark collections.
 
@@ -256,9 +266,12 @@ Each problem-specific results CSV contains one row per run with the following fi
 | `memory_limit_mb` | Configured global BBR memory limit in MiB |
 | `bbr_peak_memory_bytes` | Peak memory tracked by BBR, not whole-process resident memory |
 | `gurobi_enabled` | `1` if the executable was built with optional Gurobi support, otherwise `0` |
+| `gurobi_required` | `1` when the run required an accessible Gurobi runtime and prohibited fallback, otherwise `0` |
 | `solution_file` | `.sol` path relative to the output directory |
 
-CSV fields containing commas, quotes, or line breaks use standard double-quote escaping. Input paths below the working directory are recorded as normalized relative paths. PrecPack refuses to append to an existing problem-specific results CSV with a different header, preventing rows with incompatible schemas from being mixed.
+CSV fields containing commas, quotes, or line breaks use standard double-quote escaping. Input paths below the repository root established by a supplied launcher, or below the working directory when the executable is called directly, are recorded as normalized relative paths. PrecPack refuses to append to an existing problem-specific results CSV with a different header, preventing rows with incompatible schemas from being mixed.
+
+Each output directory contains a zero-byte `.precpack.lock` coordination file. PrecPack uses an operating-system file lock on it to serialize writers; the lock is released automatically when the process exits, including after an abnormal termination. The file may remain in place and is not solver output.
 
 The fixed public BBR interface reports four termination statuses:
 
@@ -290,7 +303,7 @@ Examples from the repository root:
 
 ./build/precpack \
   --problem salbp-i \
-  --instance data/instances/scholl269/Bowman/Bowman_c20.txt \
+  --instance data/instances/scholl/Bowman/Bowman_c20.txt \
   --time-limit 60 \
   --threads 4 \
   --output-dir results/salbp-i
@@ -305,14 +318,14 @@ Use `build\Release\precpack.exe` for a standard Windows build.
 
 ### Batch Runs
 
-`code/scripts/run_batch.py` executes instances sequentially and resumes safely. It skips an instance only when a matching row is present in the compatible problem-specific results CSV and the referenced solution file exists and is nonempty.
+Batch selection and recovery are implemented by the same compiled `precpack` executable. The platform launchers execute instances sequentially and skip an instance only when its CSV row matches the requested problem, resource profile, build capability, and solution path, and the referenced `.sol` file exists and is nonempty. A conflicting profile or a CSV row without its solution file is reported as inconsistent instead of being silently mixed into or skipped within the same output directory.
 
-The commands below invoke the Python launcher directly. On macOS or Linux, `python3 code/scripts/run_batch.py` may be replaced with `./code/scripts/run_batch.sh`. On Windows Command Prompt, use `code\scripts\run_batch.bat` with the same arguments.
+Use `./code/scripts/run_batch.sh` on macOS or Linux and `code\scripts\run_batch.bat` on Windows Command Prompt. Both launch the same C++ batch implementation with the same arguments. Relative `--input`, `--graph-dir`, and `--output-dir` paths are resolved from the directory in which the launcher is called; bundled default data remain located from the repository root. PrecPack prevents two processes from writing the same output directory concurrently.
 
 Run a small BPP-P directory:
 
 ```bash
-python3 code/scripts/run_batch.py \
+./code/scripts/run_batch.sh \
   --problem bpp-p \
   --input data/instances/otto/n_0020 \
   --time-limit 60 \
@@ -322,22 +335,44 @@ python3 code/scripts/run_batch.py \
 Run one SALBP-I suite:
 
 ```bash
-python3 code/scripts/run_batch.py \
+./code/scripts/run_batch.sh \
   --problem salbp-i \
-  --input data/instances/scholl269 \
-  --output-dir results/salbp-i-scholl269
+  --input data/instances/scholl \
+  --output-dir results/salbp-i-scholl
 ```
 
 Run one BPP-GP separation family and size:
 
 ```bash
-python3 code/scripts/run_batch.py \
+./code/scripts/run_batch.sh \
   --problem bpp-gp \
   --input data/instances/otto \
   --graph-dir data/bpp-gp-graphs/separation-01/n_0020
 ```
 
 Omitting `--input` selects the complete bundled collection for the requested problem. A complete batch can take a long time; use a suite or size directory for an initial check.
+
+#### Parallel Experiments
+
+`run_parallel.sh` and `run_parallel.bat` run the multithreaded configurations for the controlled experiment reported in the paper's “Parallel Scalability” table. They use the complete Otto collections with 100 items for SALBP-I, BPP-P, and both BPP-GP labeled-graph families. Each 525-instance set is run sequentially with 2, 4, and 8 solver threads, for 12 configurations and 6,300 runs. The corresponding single-thread results are produced by the problem-level batch runs and are not repeated here. The limits are 350 seconds for SALBP-I, 1,000 seconds for BPP-P, and 75 seconds for each BPP-GP family; every configuration uses 24,576 MiB of globally accounted BBR memory and the fixed 60,000,000-state cap.
+
+The experiment uses one frozen Gurobi-enabled Release executable so that the BPP-P and BPP-GP configurations retain the reported `price-and-switch` root policy. It therefore requires an accessible Gurobi license, although the general PrecPack solver remains exact without Gurobi. The experiment launcher enables a strict runtime profile: it verifies the license before solving, aborts on any later Gurobi failure instead of falling back, and records `gurobi_required=1`. Build once and do not rebuild while a batch is being resumed.
+
+macOS or Linux:
+
+```bash
+./code/scripts/build.sh --gurobi on
+./code/scripts/run_parallel.sh
+```
+
+Windows Command Prompt:
+
+```bat
+code\scripts\build.bat --gurobi on
+code\scripts\run_parallel.bat
+```
+
+Results are isolated below `results/parallel-experiments/<problem>/threads-<n>/`, preventing one thread configuration from overwriting another configuration's solution files. The launcher executes only one configuration at a time, restricts third-party numerical libraries to one thread, and verifies the 525-instance matrices, Gurobi runtime, problem, resource profile, CSV uniqueness, and solution-file presence before resuming. `--output-dir DIR` selects another output root. `--check-only` validates all 12 selections and compatible existing output without solving or requiring a Gurobi license, allowing the launcher matrix to be checked in the commercial-solver-free CI build. After all 6,300 runs complete, speedup and parallel efficiency can be computed by joining these CSV rows with the existing single-thread results on `instance_key` and retaining the common optimally solved subset. The total worst-case configured sequential time budget is 656.25 hours, excluding build and launcher overhead.
 
 ## Benchmark Instances
 

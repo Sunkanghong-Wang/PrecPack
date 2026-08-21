@@ -1,6 +1,8 @@
 #include "precpack/build_config.hpp"
+#include "precpack/batch.hpp"
 #include "precpack/cli.hpp"
 #include "precpack/instance_io.hpp"
+#include "precpack/output_lock.hpp"
 #include "precpack/result_io.hpp"
 #include "precpack/solver.hpp"
 #include "precpack/solver_profile.hpp"
@@ -15,22 +17,6 @@
 #include <stdexcept>
 #include <string>
 
-namespace {
-
-[[nodiscard]] std::string problem_slug(precpack::ProblemKind problem) {
-    switch (problem) {
-        case precpack::ProblemKind::kSalbpI:
-            return "salbp-i";
-        case precpack::ProblemKind::kBppP:
-            return "bpp-p";
-        case precpack::ProblemKind::kBppGp:
-            return "bpp-gp";
-    }
-    throw std::logic_error("unknown problem kind");
-}
-
-}
-
 int main(int argc, char** argv) {
     try {
         const precpack::CommandLineOptions options =
@@ -39,10 +25,14 @@ int main(int argc, char** argv) {
             precpack::print_help(std::cout, argv[0]);
             return 0;
         }
+        if (options.batch_mode) {
+            return precpack::run_batch(options);
+        }
 
         const precpack::Config config = precpack::make_solver_config(
             options.problem, options.time_limit_seconds,
             options.memory_limit_mb, options.threads);
+        const precpack::OutputLock output_lock(options.output_directory);
         const precpack::Instance instance =
             precpack::read_instance(options.instance_path, options.graph_path,
                                     precpack::to_string(options.problem));
@@ -52,7 +42,8 @@ int main(int argc, char** argv) {
             options.instance_path, options.graph_path);
         const std::filesystem::path assignment_path =
             options.output_directory / "solutions" /
-            (problem_slug(options.problem) + "__" + key + ".sol");
+            (std::string(precpack::to_slug(options.problem)) + "__" + key +
+             ".sol");
         const std::filesystem::path result_path =
             options.output_directory /
             (std::string(precpack::to_string(options.problem)) +
