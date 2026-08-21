@@ -65,23 +65,14 @@ Config make_solver_config(ProblemKind problem,
     config.time_limit_seconds = time_limit_seconds;
     config.seed = 1;
     config.threads = threads;
-    config.exact_method = ExactMethod::kBbr;
     config.bbr_memory_limit_mb = memory_limit_mb;
     config.bbr_state_limit = 60'000'000ULL;
-    config.bbr_heuristic_load_limit = 0U;
-    config.enable_initial_alns = false;
-    config.enable_initial_column_generation = false;
-    config.bbr_enable_initial_alns = false;
     config.bbr_enable_early_exact_probe = true;
-    config.bbr_enable_bidirectional_bdp = false;
     config.bbr_enable_jackson = true;
     config.bbr_enable_no_successor = true;
     config.bbr_enable_superset_memory = true;
     config.bbr_enable_profile_dominance = true;
-    config.bbr_enable_bbr12_load_order = true;
     config.bbr_enable_structured_preprocessing = true;
-    config.bbr_enable_conflict_binlb = false;
-    config.bbr_conflict_binlb_total_time_limit_seconds = 1.0;
     config.bbr_root_cg_time_limit_seconds = 5.0;
 
     if (problem == ProblemKind::kSalbpI) {
@@ -103,7 +94,7 @@ Config make_solver_config(ProblemKind problem,
         config.bbr_binlb_load_limit = 50U;
         config.bbr_binlb_memo_limit = 200'000U;
         config.bbr_binlb_max_items = 400;
-        config.bbr_root_cg_mode = BbrRootCgMode::kNone;
+        config.bbr_enable_root_strengthening = false;
     } else {
         config.bbr_enable_initial_bdp = true;
         config.bbr_enable_bbr12_mhh = false;
@@ -115,7 +106,7 @@ Config make_solver_config(ProblemKind problem,
         config.bbr_dff_transform_limit = 0;
         config.bbr_enable_closure_bound = true;
         config.bbr_enable_binlb = false;
-        config.bbr_root_cg_mode = BbrRootCgMode::kPriceAndSwitch;
+        config.bbr_enable_root_strengthening = true;
     }
     return config;
 }

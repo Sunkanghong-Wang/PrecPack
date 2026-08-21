@@ -2,7 +2,6 @@
 
 #include "precpack/algorithms.hpp"
 #include "precpack/bin_packing_bound.hpp"
-#include "precpack/conflict_bin_packing.hpp"
 #include "precpack/dff.hpp"
 #include "precpack/solver_profile.hpp"
 
@@ -1063,9 +1062,9 @@ private:
             return lhs.capacity < rhs.capacity;
         };
         std::stable_sort(candidates.begin(), candidates.end(), candidate_better);
-        constexpr std::size_t kMaximumLegacyTransforms = 7U;
-        if (candidates.size() > kMaximumLegacyTransforms) {
-            candidates.resize(kMaximumLegacyTransforms);
+        constexpr std::size_t kMaximumBaseTransforms = 7U;
+        if (candidates.size() > kMaximumBaseTransforms) {
+            candidates.resize(kMaximumBaseTransforms);
         }
 
         if (complete_family) {
@@ -2161,14 +2160,6 @@ public:
         binlb_seconds_ += seconds;
     }
 
-    [[nodiscard]] double conflict_binlb_seconds() const noexcept {
-        return conflict_binlb_seconds_;
-    }
-
-    void add_conflict_binlb_seconds(double seconds) noexcept {
-        conflict_binlb_seconds_ += seconds;
-    }
-
 private:
     std::uint64_t state_limit_ = 0;
     std::atomic<std::uint64_t> states_{0U};
@@ -2182,7 +2173,6 @@ private:
     std::atomic<std::uint64_t> worker_memory_peak_{0U};
     std::mutex auxiliary_mutex_;
     double binlb_seconds_ = 0.0;
-    double conflict_binlb_seconds_ = 0.0;
     std::atomic<int> stop_reason_{
         static_cast<int>(ParallelStopReason::kNone)};
     std::atomic<bool> shared_memory_saturated_{false};
@@ -2259,8 +2249,6 @@ public:
     BbrEngine(const PreparedInstance& prepared,
               int initial_lower_bound,
               const Assignment& initial_incumbent,
-              std::uint64_t maximum_loads_per_state,
-              bool heuristic_phase,
               const Config& config,
               Deadline& deadline,
               std::shared_ptr<const BbrPrecomputed> shared_precomputed = {},
@@ -2297,8 +2285,6 @@ public:
                          precomputed_.cooldown_levels, memory_limit_bytes_),
           incumbent_(initial_incumbent),
           upper_bound_(initial_incumbent.bin_count),
-          maximum_loads_per_state_(maximum_loads_per_state),
-          heuristic_phase_(heuristic_phase),
           current_dff_sums_(precomputed_.dff_capacity.size(), 0),
           current_key_(precomputed_.key_words, 0U),
           child_key_(precomputed_.key_words, 0U),
@@ -2307,11 +2293,6 @@ public:
           replacement_union_(precomputed_.blocks, 0U),
           item_status_(static_cast<std::size_t>(precomputed_.n), 3U),
           remaining_zero_predecessors_(static_cast<std::size_t>(precomputed_.n), 0),
-          branch_rank_(static_cast<std::size_t>(precomputed_.n), 0),
-          ready_rank_mask_(precomputed_.blocks, 0U),
-          ready_rank_block_summary_(
-              (precomputed_.blocks + 63U) / 64U, 0U),
-          excluded_ready_item_mask_(precomputed_.blocks, 0U),
           earliest_offset_(static_cast<std::size_t>(precomputed_.n), 0),
           tail_offset_(static_cast<std::size_t>(precomputed_.n), 0),
           machine_order_(static_cast<std::size_t>(precomputed_.n), 0),
@@ -2363,18 +2344,14 @@ public:
         statistics_.requested_threads = config_.threads;
         statistics_.threads = parallel_control_ == nullptr ? 1 :
             std::max(1, config_.threads);
-        statistics_.heuristic_phase_attempted = heuristic_phase_;
-        statistics_.exact_phase_attempted = !heuristic_phase_;
+        statistics_.exact_phase_attempted = true;
         statistics_.item_dominance_enabled = config_.bbr_enable_jackson;
         statistics_.generalized_item_dominance_enabled =
             config_.bbr_enable_generalized_item_dominance;
         statistics_.paper_queue_order_enabled =
             config_.bbr_enable_paper_queue_order;
-        statistics_.bbr12_load_order_enabled =
-            config_.bbr_enable_bbr12_load_order;
         statistics_.complete_dff_enabled = config_.bbr_enable_complete_dff;
-        statistics_.binlb_enabled = config_.bbr_enable_binlb ||
-            (config_.bbr_enable_conflict_binlb && !heuristic_phase_);
+        statistics_.binlb_enabled = config_.bbr_enable_binlb;
         statistics_.binlb_call_time_limit_seconds =
             config_.bbr_binlb_call_time_limit_seconds;
         statistics_.binlb_total_time_limit_seconds =
@@ -2383,20 +2360,6 @@ public:
         statistics_.binlb_load_limit = config_.bbr_binlb_load_limit;
         statistics_.binlb_memo_limit = config_.bbr_binlb_memo_limit;
         statistics_.binlb_max_items = config_.bbr_binlb_max_items;
-        statistics_.conflict_binlb_enabled =
-            config_.bbr_enable_conflict_binlb && !heuristic_phase_;
-        statistics_.conflict_binlb_call_time_limit_seconds =
-            config_.bbr_conflict_binlb_call_time_limit_seconds;
-        statistics_.conflict_binlb_total_time_limit_seconds =
-            config_.bbr_conflict_binlb_total_time_limit_seconds;
-        statistics_.conflict_binlb_node_limit =
-            config_.bbr_conflict_binlb_node_limit;
-        statistics_.conflict_binlb_load_limit =
-            config_.bbr_conflict_binlb_load_limit;
-        statistics_.conflict_binlb_memo_limit =
-            config_.bbr_conflict_binlb_memo_limit;
-        statistics_.conflict_binlb_max_items =
-            config_.bbr_conflict_binlb_max_items;
         statistics_.dff_transform_count = precomputed_.dff_capacity.size();
         statistics_.structured_preprocessing_enabled =
             prepared_.structured_preprocessing_enabled;
@@ -2415,7 +2378,6 @@ public:
             prepared_.fixed_suffix_bins.size();
         statistics_.structured_fixed_bins =
             static_cast<std::uint64_t>(prepared_.fixed_bin_offset);
-        statistics_.root_cg_mode = config_.bbr_root_cg_mode;
         if (report_precomputation_) {
             statistics_.generalized_item_dominance_search_nodes =
                 precomputed_.generalized_dominance_search_nodes;
@@ -2429,64 +2391,55 @@ public:
         statistics_.state_limit = maximum_states_;
         statistics_.configured_state_limit = config_.bbr_state_limit;
         statistics_.memory_limit_bytes = maximum_memory_limit_bytes_;
-        statistics_.heuristic_load_limit = config_.bbr_heuristic_load_limit;
-        statistics_.initial_alns_enabled = config_.enable_initial_alns;
         statistics_.seed = config_.seed;
         statistics_.time_limit_seconds = config_.time_limit_seconds;
         statistics_.initialization_time_limit_seconds =
             config_.initialization_time_limit_seconds > 0.0
                 ? config_.initialization_time_limit_seconds
                 : std::min(3.0, 0.1 * config_.time_limit_seconds);
+        bbr12_item_order_ = precomputed_.branch_order;
+        bbr12_rank_.resize(static_cast<std::size_t>(precomputed_.n));
         for (int rank = 0; rank < precomputed_.n; ++rank) {
-            branch_rank_[static_cast<std::size_t>(precomputed_.branch_order[
+            bbr12_rank_[static_cast<std::size_t>(bbr12_item_order_[
                 static_cast<std::size_t>(rank)])] = rank;
         }
-        if (statistics_.bbr12_load_order_enabled) {
-            bbr12_item_order_ = precomputed_.branch_order;
-            bbr12_rank_.resize(static_cast<std::size_t>(precomputed_.n));
-            for (int rank = 0; rank < precomputed_.n; ++rank) {
-                bbr12_rank_[static_cast<std::size_t>(bbr12_item_order_[
-                    static_cast<std::size_t>(rank)])] = rank;
-            }
-            bbr12_successor_offsets_.resize(
-                static_cast<std::size_t>(precomputed_.n + 1), 0);
-            for (int item = 0; item < precomputed_.n; ++item) {
-                bbr12_successor_offsets_[static_cast<std::size_t>(item + 1)] =
-                    bbr12_successor_offsets_[static_cast<std::size_t>(item)] +
-                    precomputed_.zero_successor_offset[
-                        static_cast<std::size_t>(item + 1)] -
-                    precomputed_.zero_successor_offset[
-                        static_cast<std::size_t>(item)];
-            }
-            bbr12_successors_.resize(static_cast<std::size_t>(
-                bbr12_successor_offsets_.back()));
-            for (int item = 0; item < precomputed_.n; ++item) {
-                const int source_begin = precomputed_.zero_successor_offset[
+        bbr12_successor_offsets_.resize(
+            static_cast<std::size_t>(precomputed_.n + 1), 0);
+        for (int item = 0; item < precomputed_.n; ++item) {
+            bbr12_successor_offsets_[static_cast<std::size_t>(item + 1)] =
+                bbr12_successor_offsets_[static_cast<std::size_t>(item)] +
+                precomputed_.zero_successor_offset[
+                    static_cast<std::size_t>(item + 1)] -
+                precomputed_.zero_successor_offset[
                     static_cast<std::size_t>(item)];
-                const int source_end = precomputed_.zero_successor_offset[
-                    static_cast<std::size_t>(item + 1)];
-                const int target_begin = bbr12_successor_offsets_[
-                    static_cast<std::size_t>(item)];
-                std::copy(
-                    precomputed_.zero_successors.begin() + source_begin,
-                    precomputed_.zero_successors.begin() + source_end,
-                    bbr12_successors_.begin() + target_begin);
-                std::stable_sort(
-                    bbr12_successors_.begin() + target_begin,
-                    bbr12_successors_.begin() +
-                        bbr12_successor_offsets_[
-                            static_cast<std::size_t>(item + 1)],
-                    [&](int lhs, int rhs) {
-                        return bbr12_rank_[static_cast<std::size_t>(lhs)] <
-                               bbr12_rank_[static_cast<std::size_t>(rhs)];
-                    });
-            }
-            bbr12_eligible_.resize(static_cast<std::size_t>(precomputed_.n));
         }
+        bbr12_successors_.resize(static_cast<std::size_t>(
+            bbr12_successor_offsets_.back()));
+        for (int item = 0; item < precomputed_.n; ++item) {
+            const int source_begin = precomputed_.zero_successor_offset[
+                static_cast<std::size_t>(item)];
+            const int source_end = precomputed_.zero_successor_offset[
+                static_cast<std::size_t>(item + 1)];
+            const int target_begin = bbr12_successor_offsets_[
+                static_cast<std::size_t>(item)];
+            std::copy(
+                precomputed_.zero_successors.begin() + source_begin,
+                precomputed_.zero_successors.begin() + source_end,
+                bbr12_successors_.begin() + target_begin);
+            std::stable_sort(
+                bbr12_successors_.begin() + target_begin,
+                bbr12_successors_.begin() +
+                    bbr12_successor_offsets_[
+                        static_cast<std::size_t>(item + 1)],
+                [&](int lhs, int rhs) {
+                    return bbr12_rank_[static_cast<std::size_t>(lhs)] <
+                           bbr12_rank_[static_cast<std::size_t>(rhs)];
+                });
+        }
+        bbr12_eligible_.resize(static_cast<std::size_t>(precomputed_.n));
         constexpr int kMaximumFitMaskCapacity = 65'536;
         fit_item_masks_available_ =
             precomputed_.capacity <= kMaximumFitMaskCapacity;
-        fast_fit_masks_enabled_ = fit_item_masks_available_;
         if (fit_item_masks_available_) {
             fit_item_masks_.assign(
                 static_cast<std::size_t>(precomputed_.capacity + 1) *
@@ -2529,8 +2482,7 @@ public:
                     sizeof(std::uint16_t) +
                 32U;
             const std::uint64_t auxiliary_memo_budget =
-                maximum_memory_limit_bytes_ /
-                (statistics_.conflict_binlb_enabled ? 16U : 8U);
+                maximum_memory_limit_bytes_ / 8U;
             limits.memo_entry_limit = std::min(
                 config_.bbr_binlb_memo_limit,
                 auxiliary_memo_budget /
@@ -2540,32 +2492,6 @@ public:
             bin_packing_ = std::make_unique<BinPackingBound>(
                 instance_, limits);
             conflict_remaining_.assign(precomputed_.blocks, 0U);
-        }
-        if (statistics_.conflict_binlb_enabled) {
-            ConflictBinPackingLimits limits;
-            limits.call_time_limit_seconds =
-                config_.bbr_conflict_binlb_call_time_limit_seconds;
-            limits.total_time_limit_seconds =
-                config_.bbr_conflict_binlb_total_time_limit_seconds;
-            limits.search_node_limit = config_.bbr_conflict_binlb_node_limit;
-            limits.maximal_load_limit_per_state =
-                config_.bbr_conflict_binlb_load_limit;
-            const std::uint64_t estimated_memo_entry_bytes =
-                static_cast<std::uint64_t>(precomputed_.blocks) *
-                    sizeof(std::uint64_t) +
-                32U;
-            const std::uint64_t auxiliary_memo_budget =
-                maximum_memory_limit_bytes_ / 8U;
-            limits.memo_entry_limit = std::min(
-                config_.bbr_conflict_binlb_memo_limit,
-                auxiliary_memo_budget /
-                    std::max<std::uint64_t>(1U,
-                                            estimated_memo_entry_bytes));
-            limits.maximum_item_count = config_.bbr_conflict_binlb_max_items;
-            conflict_bin_packing_ = std::make_unique<ConflictBinPackingBound>(
-                instance_, limits, bin_packing_.get());
-            statistics_.conflict_binlb_conflict_edges =
-                conflict_bin_packing_->conflict_edge_count();
         }
         heaps_.resize(static_cast<std::size_t>(upper_bound_ + 1));
         refresh_fixed_memory_bytes();
@@ -2626,7 +2552,7 @@ public:
                             ? pop_heaviest_split_state()
                             : pop_next_state();
                     if (state == kInvalidState) {
-                        optimal_ = !load_generation_truncated_;
+                        optimal_ = true;
                         break;
                     }
                     expand_state(state);
@@ -2635,7 +2561,7 @@ public:
                     upper_bound_ > initial_lower_bound_) {
                     split_result.tasks = export_open_tasks();
                     if (split_result.tasks.empty()) {
-                        optimal_ = !load_generation_truncated_;
+                        optimal_ = true;
                     }
                 }
             }
@@ -2713,7 +2639,7 @@ public:
                     }
                     const std::uint32_t state = pop_next_state();
                     if (state == kInvalidState) {
-                        optimal_ = !load_generation_truncated_;
+                        optimal_ = true;
                         break;
                     }
                     expand_state(state);
@@ -2742,51 +2668,25 @@ private:
         BbrResult result;
         result.attempted = true;
         result.optimal = !frontier_exported &&
-            ((optimal_ && !load_generation_truncated_) ||
-             upper_bound_ <= initial_lower_bound_);
+            (optimal_ || upper_bound_ <= initial_lower_bound_);
         result.timed_out = timed_out_;
         result.state_limited = state_limited_;
         result.memory_limited = memory_limited_;
         result.incumbent = incumbent_;
         result.certified_lower_bound = result.optimal
             ? upper_bound_
-            : (load_generation_truncated_
-                   ? initial_lower_bound_
-                   : certified_open_lower_bound());
+            : certified_open_lower_bound();
         result.certified_lower_bound = std::min(result.certified_lower_bound,
                                                 upper_bound_);
 
         statistics_.timed_out = result.timed_out;
         statistics_.state_limited = result.state_limited;
         statistics_.memory_limited = result.memory_limited;
-        statistics_.load_generation_truncated = load_generation_truncated_;
         statistics_.peak_memory_bytes =
             std::max(statistics_.peak_memory_bytes, current_memory_bytes());
         statistics_.search_seconds =
             std::chrono::duration<double>(Clock::now() - search_start).count();
-        if (heuristic_phase_) {
-            statistics_.heuristic_search_seconds = statistics_.search_seconds;
-            statistics_.heuristic_states_created = statistics_.states_created;
-            statistics_.heuristic_states_expanded = statistics_.states_expanded;
-            statistics_.heuristic_loads_generated = statistics_.loads_generated;
-        } else {
-            statistics_.exact_search_seconds = statistics_.search_seconds;
-        }
-        if (frontier_exported) {
-            statistics_.stop_reason = "PARALLEL_SPLIT";
-        } else if (result.optimal) {
-            statistics_.stop_reason = "OPTIMAL";
-        } else if (result.state_limited) {
-            statistics_.stop_reason = "STATE_LIMIT";
-        } else if (result.memory_limited) {
-            statistics_.stop_reason = "MEMORY_LIMIT";
-        } else if (result.timed_out) {
-            statistics_.stop_reason = "TIME_LIMIT";
-        } else if (load_generation_truncated_) {
-            statistics_.stop_reason = "HEURISTIC_TRUNCATED";
-        } else {
-            statistics_.stop_reason = "STOPPED";
-        }
+        statistics_.exact_search_seconds = statistics_.search_seconds;
         result.statistics = statistics_;
         return result;
     }
@@ -2960,7 +2860,7 @@ private:
             }
             const std::uint32_t state = pop_next_state();
             if (state == kInvalidState) {
-                optimal_ = !load_generation_truncated_;
+                optimal_ = true;
                 break;
             }
             expand_state(state);
@@ -3387,38 +3287,6 @@ private:
                     break;
                 }
             }
-#if defined(PRECPACK_VERIFY_CLOSURE_SCREEN)
-            int reference_bound = bound_before_closure;
-            for (int item = 0; item < precomputed_.n; ++item) {
-                if (bit_is_set(assigned, item)) {
-                    continue;
-                }
-                const std::int64_t own_weight =
-                    instance_.items[static_cast<std::size_t>(item)].weight;
-                const std::int64_t prefix_weight = own_weight +
-                    precomputed_.masked_weight_sum(
-                        precomputed_.predecessor_closure_row(item), assigned);
-                const std::int64_t suffix_weight = own_weight +
-                    precomputed_.masked_weight_sum(
-                        precomputed_.successor_closure_row(item), assigned);
-                const int prefix_bins = std::max(
-                    ceil_div_i64(prefix_weight, precomputed_.capacity),
-                    earliest_offset_[static_cast<std::size_t>(item)] + 1);
-                const int suffix_bins = std::max(
-                    ceil_div_i64(suffix_weight, precomputed_.capacity),
-                    tail_offset_[static_cast<std::size_t>(item)] + 1);
-                reference_bound = std::max(
-                    reference_bound,
-                    depth + prefix_bins + suffix_bins - 1);
-            }
-            if (std::min(reference_bound, upper_bound_) !=
-                std::min(lower_bound, upper_bound_)) {
-                throw std::logic_error(
-                    "ordered closure screening changed the lower bound: " +
-                    std::to_string(lower_bound) + " versus " +
-                    std::to_string(reference_bound));
-            }
-#endif
             if (lower_bound > bound_before_closure) {
                 ++statistics_.closure_bound_improvements;
             }
@@ -3435,7 +3303,7 @@ private:
         int depth,
         int assigned_count,
         int lower_bound) {
-        if ((bin_packing_ == nullptr && conflict_bin_packing_ == nullptr) ||
+        if (bin_packing_ == nullptr ||
             lower_bound >= upper_bound_) {
             return lower_bound;
         }
@@ -3519,82 +3387,8 @@ private:
             }
         }
 
-        if (conflict_bin_packing_ == nullptr ||
-            conflict_binlb_budget_exhausted_) {
-            return lower_bound;
-        }
-        if (remaining_count > conflict_binlb_next_item_count_) {
-            ++statistics_.conflict_binlb_backoff_skips;
-            return lower_bound;
-        }
-        std::unique_lock<std::mutex> shared_conflict_lock;
-        if (parallel_control_ != nullptr) {
-            shared_conflict_lock =
-                parallel_control_->lock_auxiliary_bounds();
-            if (parallel_control_->conflict_binlb_seconds() >=
-                config_.bbr_conflict_binlb_total_time_limit_seconds) {
-                ++statistics_.conflict_binlb_budget_skips;
-                conflict_binlb_budget_exhausted_ = true;
-                return lower_bound;
-            }
-        }
-        ++statistics_.conflict_binlb_calls;
-        const ConflictBinPackingResult result =
-            conflict_bin_packing_->solve(conflict_remaining_.data(), deadline_);
-        if (!synchronize_memory_lease()) {
-            return upper_bound_;
-        }
-        statistics_.conflict_binlb_search_nodes += result.search_nodes;
-        statistics_.conflict_binlb_loads += result.maximal_loads;
-        statistics_.conflict_binlb_memo_hits += result.memo_hits;
-        statistics_.conflict_binlb_ordinary_memo_hits +=
-            result.ordinary_memo_hits;
-        statistics_.conflict_binlb_seconds += result.seconds;
-        if (parallel_control_ != nullptr) {
-            parallel_control_->add_conflict_binlb_seconds(result.seconds);
-        }
-        statistics_.conflict_binlb_memo_entries =
-            conflict_bin_packing_->memo_entry_count();
-        if (result.item_limited) {
-            ++statistics_.conflict_binlb_item_skips;
-            conflict_binlb_next_item_count_ = std::min(
-                conflict_binlb_next_item_count_,
-                config_.bbr_conflict_binlb_max_items);
-            return lower_bound;
-        }
-        if (result.total_budget_exhausted) {
-            ++statistics_.conflict_binlb_budget_skips;
-            conflict_binlb_budget_exhausted_ = true;
-            return lower_bound;
-        }
-        if (!result.completed) {
-            if (result.attempted) {
-                ++statistics_.conflict_binlb_aborted;
-                statistics_.conflict_binlb_timeouts += result.timed_out ? 1U : 0U;
-                statistics_.conflict_binlb_node_limits +=
-                    result.node_limited ? 1U : 0U;
-                statistics_.conflict_binlb_load_limits +=
-                    result.load_limited ? 1U : 0U;
-                constexpr int kFailureBackoffItems = 8;
-                conflict_binlb_next_item_count_ = std::min(
-                    conflict_binlb_next_item_count_,
-                    std::max(0, remaining_count - kFailureBackoffItems));
-            }
-            return lower_bound;
-        }
-
-        ++statistics_.conflict_binlb_completed;
-        const int exact_relaxation_bound = depth + result.optimum;
-        if (exact_relaxation_bound > lower_bound) {
-            ++statistics_.conflict_binlb_bound_improvements;
-            lower_bound = exact_relaxation_bound;
-        }
-        if (lower_bound >= upper_bound_) {
-            ++statistics_.conflict_binlb_prunes;
-        }
         return lower_bound;
     }
-
     [[nodiscard]] int compute_lower_bound(
         const std::uint64_t* key,
         int depth,
@@ -3619,11 +3413,6 @@ private:
     void prepare_load_enumeration() {
         std::fill(load_mask_.begin(), load_mask_.end(), 0U);
         std::fill(load_dff_sums_.begin(), load_dff_sums_.end(), 0);
-        std::fill(ready_rank_mask_.begin(), ready_rank_mask_.end(), 0U);
-        std::fill(ready_rank_block_summary_.begin(),
-                  ready_rank_block_summary_.end(), 0U);
-        std::fill(excluded_ready_item_mask_.begin(),
-                  excluded_ready_item_mask_.end(), 0U);
         std::fill(boundary_eligible_item_mask_.begin(),
                   boundary_eligible_item_mask_.end(), 0U);
         current_load_weight_ = 0;
@@ -3631,8 +3420,6 @@ private:
         load_assigned_delta_hash_ = 0U;
         current_remaining_capacity_ = precomputed_.capacity;
         root_has_ready_item_ = false;
-        load_generation_count_ = 0;
-        current_state_truncated_ = false;
         bbr12_root_eligible_size_ = 0U;
 
         const std::uint64_t* assigned = current_key_.data();
@@ -3665,138 +3452,23 @@ private:
                 remaining;
             if (remaining == 0) {
                 root_has_ready_item_ = true;
-                set_ready_rank(item);
             }
         }
-        if (statistics_.bbr12_load_order_enabled) {
-            for (const int item : bbr12_item_order_) {
-                if (item_status_[static_cast<std::size_t>(item)] == 0U &&
-                    remaining_zero_predecessors_[static_cast<std::size_t>(item)] ==
-                        0) {
-                    bbr12_eligible_[bbr12_root_eligible_size_++] = item;
-                }
+        for (const int item : bbr12_item_order_) {
+            if (item_status_[static_cast<std::size_t>(item)] == 0U &&
+                remaining_zero_predecessors_[static_cast<std::size_t>(item)] ==
+                    0) {
+                bbr12_eligible_[bbr12_root_eligible_size_++] = item;
             }
         }
     }
 
     void enumerate_loads() {
-        if (statistics_.bbr12_load_order_enabled) {
-            load_dfs_bbr12(0U, bbr12_root_eligible_size_);
-        } else {
-            load_dfs();
-        }
+        load_dfs_bbr12(0U, bbr12_root_eligible_size_);
     }
 
-    [[nodiscard]] bool stop_load_search() {
-        if (stop_ || current_bound_ >= upper_bound_) {
-            return true;
-        }
-        if (maximum_loads_per_state_ > 0U &&
-            load_generation_count_ >= maximum_loads_per_state_) {
-            if (!current_state_truncated_) {
-                current_state_truncated_ = true;
-                load_generation_truncated_ = true;
-                ++statistics_.truncated_load_states;
-            }
-            return true;
-        }
-        return false;
-    }
-
-    void load_dfs() {
-        if (stop_load_search()) {
-            return;
-        }
-        ++statistics_.load_search_nodes;
-        if ((statistics_.load_search_nodes & 2047U) == 0U) {
-            synchronize_parallel_state();
-            if (stop_) {
-                return;
-            }
-            if (deadline_.expired()) {
-                timed_out_ = true;
-                stop_ = true;
-                signal_parallel_stop(ParallelStopReason::kTimeLimit);
-                return;
-            }
-        }
-
-        const int candidate = first_ready_candidate();
-        if (candidate < 0) {
-            emit_if_maximal();
-            return;
-        }
-        clear_ready_rank(candidate);
-
-        const int weight =
-            instance_.items[static_cast<std::size_t>(candidate)].weight;
-        if (weight <= current_remaining_capacity_) {
-            item_status_[static_cast<std::size_t>(candidate)] = 1U;
-            set_bit(load_mask_.data(), candidate);
-            current_load_weight_ += weight;
-            ++current_load_count_;
-            load_assigned_delta_hash_ ^=
-                precomputed_.item_hash[static_cast<std::size_t>(candidate)];
-            current_remaining_capacity_ -= weight;
-            const std::int64_t* item_dff =
-                precomputed_.transformed_weights_for_item(candidate);
-            for (std::size_t transform = 0;
-                 transform < load_dff_sums_.size(); ++transform) {
-                load_dff_sums_[transform] += item_dff[transform];
-            }
-            for (int position = precomputed_.zero_successor_offset[
-                                      static_cast<std::size_t>(candidate)];
-                 position < precomputed_.zero_successor_offset[
-                                static_cast<std::size_t>(candidate + 1)];
-                 ++position) {
-                const int successor = precomputed_.zero_successors[
-                    static_cast<std::size_t>(position)];
-                if (item_status_[static_cast<std::size_t>(successor)] <= 2U) {
-                    --remaining_zero_predecessors_[
-                        static_cast<std::size_t>(successor)];
-                    if (item_status_[static_cast<std::size_t>(successor)] == 0U &&
-                        remaining_zero_predecessors_[
-                            static_cast<std::size_t>(successor)] == 0) {
-                        set_ready_rank(successor);
-                    }
-                }
-            }
-            load_dfs();
-            for (int position = precomputed_.zero_successor_offset[
-                                      static_cast<std::size_t>(candidate)];
-                 position < precomputed_.zero_successor_offset[
-                                static_cast<std::size_t>(candidate + 1)];
-                 ++position) {
-                const int successor = precomputed_.zero_successors[
-                    static_cast<std::size_t>(position)];
-                if (item_status_[static_cast<std::size_t>(successor)] <= 2U) {
-                    if (item_status_[static_cast<std::size_t>(successor)] == 0U &&
-                        remaining_zero_predecessors_[
-                            static_cast<std::size_t>(successor)] == 0) {
-                        clear_ready_rank(successor);
-                    }
-                    ++remaining_zero_predecessors_[
-                        static_cast<std::size_t>(successor)];
-                }
-            }
-            for (std::size_t transform = 0;
-                 transform < load_dff_sums_.size(); ++transform) {
-                load_dff_sums_[transform] -= item_dff[transform];
-            }
-            current_remaining_capacity_ += weight;
-            --current_load_count_;
-            load_assigned_delta_hash_ ^=
-                precomputed_.item_hash[static_cast<std::size_t>(candidate)];
-            current_load_weight_ -= weight;
-            clear_bit(load_mask_.data(), candidate);
-        }
-
-        item_status_[static_cast<std::size_t>(candidate)] = 2U;
-        set_excluded_ready(candidate);
-        load_dfs();
-        clear_excluded_ready(candidate);
-        item_status_[static_cast<std::size_t>(candidate)] = 0U;
-        set_ready_rank(candidate);
+    [[nodiscard]] bool stop_load_search() const noexcept {
+        return stop_ || current_bound_ >= upper_bound_;
     }
 
     void load_dfs_bbr12(std::size_t start, std::size_t eligible_size) {
@@ -3911,41 +3583,12 @@ private:
     }
 
     void emit_if_maximal() {
-        if (!statistics_.bbr12_load_order_enabled) {
-            if (fast_fit_masks_enabled_) {
-                const std::uint64_t* fit = fit_item_masks_.data() +
-                    static_cast<std::size_t>(current_remaining_capacity_) *
-                        precomputed_.blocks;
-                bool extendable = false;
-                for (std::size_t block = 0; block < precomputed_.blocks;
-                     ++block) {
-                    extendable = extendable ||
-                        (fit[block] & excluded_ready_item_mask_[block]) != 0U;
-                }
-                if (extendable) {
-                    ++statistics_.nonmaximal_load_prunes;
-                    return;
-                }
-            } else {
-                for (int item = 0; item < precomputed_.n; ++item) {
-                    if (item_status_[static_cast<std::size_t>(item)] == 2U &&
-                        remaining_zero_predecessors_[static_cast<std::size_t>(item)] ==
-                            0 &&
-                        instance_.items[static_cast<std::size_t>(item)].weight <=
-                            current_remaining_capacity_) {
-                        ++statistics_.nonmaximal_load_prunes;
-                        return;
-                    }
-                }
-            }
-        }
         if (current_load_count_ == 0 && root_has_ready_item_) {
             ++statistics_.nonmaximal_load_prunes;
             return;
         }
 
         ++statistics_.loads_generated;
-        ++load_generation_count_;
         if (config_.bbr_enable_jackson &&
             jackson_dominated()) {
             ++statistics_.jackson_prunes;
@@ -4150,60 +3793,6 @@ private:
             }
         }
         return false;
-    }
-
-    void set_ready_rank(int item) noexcept {
-        const unsigned rank = static_cast<unsigned>(
-            branch_rank_[static_cast<std::size_t>(item)]);
-        const std::size_t block = rank >> 6U;
-        std::uint64_t& word = ready_rank_mask_[block];
-        if (word == 0U) {
-            ready_rank_block_summary_[block >> 6U] |=
-                std::uint64_t{1} << (block & 63U);
-        }
-        word |= std::uint64_t{1} << (rank & 63U);
-    }
-
-    void clear_ready_rank(int item) noexcept {
-        const unsigned rank = static_cast<unsigned>(
-            branch_rank_[static_cast<std::size_t>(item)]);
-        const std::size_t block = rank >> 6U;
-        std::uint64_t& word = ready_rank_mask_[block];
-        word &= ~(std::uint64_t{1} << (rank & 63U));
-        if (word == 0U) {
-            ready_rank_block_summary_[block >> 6U] &=
-                ~(std::uint64_t{1} << (block & 63U));
-        }
-    }
-
-    [[nodiscard]] int first_ready_candidate() const noexcept {
-        for (std::size_t summary_block = 0;
-             summary_block < ready_rank_block_summary_.size();
-             ++summary_block) {
-            const std::uint64_t summary =
-                ready_rank_block_summary_[summary_block];
-            if (summary == 0U) {
-                continue;
-            }
-            const std::size_t rank_block = summary_block * 64U +
-                std::countr_zero(summary);
-            const unsigned rank = static_cast<unsigned>(rank_block * 64U) +
-                std::countr_zero(ready_rank_mask_[rank_block]);
-            return precomputed_.branch_order[static_cast<std::size_t>(rank)];
-        }
-        return -1;
-    }
-
-    void set_excluded_ready(int item) noexcept {
-        const unsigned value = static_cast<unsigned>(item);
-        excluded_ready_item_mask_[value >> 6U] |=
-            std::uint64_t{1} << (value & 63U);
-    }
-
-    void clear_excluded_ready(int item) noexcept {
-        const unsigned value = static_cast<unsigned>(item);
-        excluded_ready_item_mask_[value >> 6U] &=
-            ~(std::uint64_t{1} << (value & 63U));
     }
 
     void process_load() {
@@ -4753,14 +4342,9 @@ private:
     }
 
     [[nodiscard]] std::uint64_t fixed_memory_bytes() const noexcept {
-        return saturated_add(saturated_add(
+        return saturated_add(
             fixed_memory_bytes_cached_,
-            bin_packing_ == nullptr
-                ? 0U
-                : bin_packing_->memory_bytes()),
-            conflict_bin_packing_ == nullptr
-                ? 0U
-                : conflict_bin_packing_->memory_bytes());
+            bin_packing_ == nullptr ? 0U : bin_packing_->memory_bytes());
     }
 
     void refresh_fixed_memory_bytes() noexcept {
@@ -4780,16 +4364,12 @@ private:
         add(vector_memory_bytes(replacement_union_));
         add(vector_memory_bytes(item_status_));
         add(vector_memory_bytes(remaining_zero_predecessors_));
-        add(vector_memory_bytes(branch_rank_));
         add(vector_memory_bytes(bbr12_item_order_));
         add(vector_memory_bytes(bbr12_rank_));
         add(vector_memory_bytes(bbr12_eligible_));
         add(vector_memory_bytes(bbr12_successors_));
         add(vector_memory_bytes(bbr12_successor_offsets_));
         add(vector_memory_bytes(fit_item_masks_));
-        add(vector_memory_bytes(ready_rank_mask_));
-        add(vector_memory_bytes(ready_rank_block_summary_));
-        add(vector_memory_bytes(excluded_ready_item_mask_));
         add(vector_memory_bytes(boundary_eligible_item_mask_));
         add(vector_memory_bytes(earliest_offset_));
         add(vector_memory_bytes(tail_offset_));
@@ -4947,12 +4527,9 @@ private:
     ExactStateTable exact_table_;
     AssignedProfileTable profile_table_;
     std::unique_ptr<BinPackingBound> bin_packing_;
-    std::unique_ptr<ConflictBinPackingBound> conflict_bin_packing_;
     std::uint64_t maximum_states_ = 0;
     Assignment incumbent_;
     int upper_bound_ = 0;
-    std::uint64_t maximum_loads_per_state_ = 0;
-    bool heuristic_phase_ = false;
     std::vector<std::vector<QueueEntry>> heaps_;
     std::uint64_t fixed_memory_bytes_cached_ = 0;
     std::uint64_t heap_memory_bytes_cached_ = 0;
@@ -4965,12 +4542,8 @@ private:
     bool timed_out_ = false;
     bool state_limited_ = false;
     bool memory_limited_ = false;
-    bool load_generation_truncated_ = false;
     bool binlb_disabled_after_abort_ = false;
     bool binlb_budget_exhausted_ = false;
-    bool conflict_binlb_budget_exhausted_ = false;
-    int conflict_binlb_next_item_count_ = std::numeric_limits<int>::max();
-    bool current_state_truncated_ = false;
 
     std::uint32_t current_state_ = kInvalidState;
     std::uint32_t current_version_ = 0;
@@ -4989,7 +4562,6 @@ private:
     std::vector<std::uint64_t> replacement_union_;
     std::vector<unsigned char> item_status_;
     std::vector<int> remaining_zero_predecessors_;
-    std::vector<int> branch_rank_;
     std::vector<int> bbr12_item_order_;
     std::vector<int> bbr12_rank_;
     std::vector<int> bbr12_eligible_;
@@ -4997,12 +4569,8 @@ private:
     std::vector<int> bbr12_successor_offsets_;
     std::size_t bbr12_root_eligible_size_ = 0U;
     std::vector<std::uint64_t> fit_item_masks_;
-    std::vector<std::uint64_t> ready_rank_mask_;
-    std::vector<std::uint64_t> ready_rank_block_summary_;
-    std::vector<std::uint64_t> excluded_ready_item_mask_;
     std::vector<std::uint64_t> boundary_eligible_item_mask_;
     bool fit_item_masks_available_ = false;
-    bool fast_fit_masks_enabled_ = false;
     bool fast_bppp_dominance_masks_enabled_ = false;
     std::vector<int> earliest_offset_;
     std::vector<int> tail_offset_;
@@ -5023,7 +4591,6 @@ private:
     std::uint64_t load_assigned_delta_hash_ = 0;
     int current_remaining_capacity_ = 0;
     bool root_has_ready_item_ = false;
-    std::uint64_t load_generation_count_ = 0;
 };
 
 void add_phase_counters(BbrStatistics& target,
@@ -5033,7 +4600,6 @@ void add_phase_counters(BbrStatistics& target,
     target.states_reopened += source.states_reopened;
     target.loads_generated += source.loads_generated;
     target.load_search_nodes += source.load_search_nodes;
-    target.truncated_load_states += source.truncated_load_states;
     target.forced_empty_transitions += source.forced_empty_transitions;
     target.hash_lookups += source.hash_lookups;
     target.hash_probes += source.hash_probes;
@@ -5071,30 +4637,6 @@ void add_phase_counters(BbrStatistics& target,
     target.binlb_memo_hits += source.binlb_memo_hits;
     target.binlb_memo_entries = std::max(
         target.binlb_memo_entries, source.binlb_memo_entries);
-    target.conflict_binlb_calls += source.conflict_binlb_calls;
-    target.conflict_binlb_completed += source.conflict_binlb_completed;
-    target.conflict_binlb_aborted += source.conflict_binlb_aborted;
-    target.conflict_binlb_timeouts += source.conflict_binlb_timeouts;
-    target.conflict_binlb_node_limits += source.conflict_binlb_node_limits;
-    target.conflict_binlb_load_limits += source.conflict_binlb_load_limits;
-    target.conflict_binlb_item_skips += source.conflict_binlb_item_skips;
-    target.conflict_binlb_backoff_skips +=
-        source.conflict_binlb_backoff_skips;
-    target.conflict_binlb_budget_skips += source.conflict_binlb_budget_skips;
-    target.conflict_binlb_bound_improvements +=
-        source.conflict_binlb_bound_improvements;
-    target.conflict_binlb_prunes += source.conflict_binlb_prunes;
-    target.conflict_binlb_search_nodes += source.conflict_binlb_search_nodes;
-    target.conflict_binlb_loads += source.conflict_binlb_loads;
-    target.conflict_binlb_memo_hits += source.conflict_binlb_memo_hits;
-    target.conflict_binlb_ordinary_memo_hits +=
-        source.conflict_binlb_ordinary_memo_hits;
-    target.conflict_binlb_memo_entries = std::max(
-        target.conflict_binlb_memo_entries,
-        source.conflict_binlb_memo_entries);
-    target.conflict_binlb_conflict_edges = std::max(
-        target.conflict_binlb_conflict_edges,
-        source.conflict_binlb_conflict_edges);
     target.incumbent_updates += source.incumbent_updates;
     target.parallel_tasks_generated += source.parallel_tasks_generated;
     target.parallel_tasks_completed += source.parallel_tasks_completed;
@@ -5128,36 +4670,7 @@ void add_phase_counters(BbrStatistics& target,
     target.generalized_item_dominance_seconds +=
         source.generalized_item_dominance_seconds;
     target.binlb_seconds += source.binlb_seconds;
-    target.conflict_binlb_seconds += source.conflict_binlb_seconds;
     target.parallel_split_seconds += source.parallel_split_seconds;
-}
-
-void merge_heuristic_statistics(BbrStatistics& exact,
-                                const BbrStatistics& heuristic) noexcept {
-    add_phase_counters(exact, heuristic);
-    exact.heuristic_phase_attempted = heuristic.heuristic_phase_attempted;
-    exact.item_dominance_enabled =
-        exact.item_dominance_enabled || heuristic.item_dominance_enabled;
-    exact.generalized_item_dominance_enabled =
-        exact.generalized_item_dominance_enabled ||
-        heuristic.generalized_item_dominance_enabled;
-    exact.paper_queue_order_enabled =
-        exact.paper_queue_order_enabled || heuristic.paper_queue_order_enabled;
-    exact.bbr12_load_order_enabled =
-        exact.bbr12_load_order_enabled || heuristic.bbr12_load_order_enabled;
-    exact.complete_dff_enabled =
-        exact.complete_dff_enabled || heuristic.complete_dff_enabled;
-    exact.binlb_enabled = exact.binlb_enabled || heuristic.binlb_enabled;
-    exact.conflict_binlb_enabled =
-        exact.conflict_binlb_enabled || heuristic.conflict_binlb_enabled;
-    exact.load_generation_truncated =
-        exact.load_generation_truncated ||
-        heuristic.load_generation_truncated;
-    exact.heuristic_states_created = heuristic.states_created;
-    exact.heuristic_states_expanded = heuristic.states_expanded;
-    exact.heuristic_loads_generated = heuristic.loads_generated;
-    exact.heuristic_search_seconds = heuristic.search_seconds;
-    exact.search_seconds += heuristic.search_seconds;
 }
 
 void restore_requested_configuration_metadata(
@@ -5168,14 +4681,9 @@ void restore_requested_configuration_metadata(
         requested_config.bbr_enable_generalized_item_dominance;
     statistics.paper_queue_order_enabled =
         requested_config.bbr_enable_paper_queue_order;
-    statistics.bbr12_load_order_enabled =
-        requested_config.bbr_enable_bbr12_load_order;
     statistics.complete_dff_enabled =
         requested_config.bbr_enable_complete_dff;
-    statistics.binlb_enabled = requested_config.bbr_enable_binlb ||
-                               requested_config.bbr_enable_conflict_binlb;
-    statistics.conflict_binlb_enabled =
-        requested_config.bbr_enable_conflict_binlb;
+    statistics.binlb_enabled = requested_config.bbr_enable_binlb;
     statistics.configured_state_limit = requested_config.bbr_state_limit;
     statistics.state_limit = requested_config.bbr_state_limit;
     statistics.requested_threads = requested_config.threads;
@@ -5230,7 +4738,7 @@ struct ParallelWorkerQueue {
     const int thread_count = resolve_thread_count(requested_config.threads);
     if (thread_count <= 1) {
         BbrEngine engine(prepared, initial_lower_bound, initial_incumbent,
-                         0U, false, requested_config, deadline);
+                         requested_config, deadline);
         return engine.solve();
     }
 
@@ -5260,13 +4768,11 @@ struct ParallelWorkerQueue {
     } catch (const std::bad_alloc&) {
         early_result.memory_limited = true;
         early_result.statistics.memory_limited = true;
-        early_result.statistics.stop_reason = "MEMORY_LIMIT";
         return early_result;
     }
     if (deadline.expired()) {
         early_result.timed_out = true;
         early_result.statistics.timed_out = true;
-        early_result.statistics.stop_reason = "TIME_LIMIT";
         early_result.statistics.search_seconds =
             std::chrono::duration<double>(Clock::now() - parallel_start).count();
         return early_result;
@@ -5311,7 +4817,6 @@ struct ParallelWorkerQueue {
         minimum_local_memory >= global_memory - fixed_reserve) {
         early_result.memory_limited = true;
         early_result.statistics.memory_limited = true;
-        early_result.statistics.stop_reason = "MEMORY_LIMIT";
         early_result.statistics.peak_memory_bytes =
             std::min(global_memory, precomputed_memory);
         return early_result;
@@ -5331,7 +4836,6 @@ struct ParallelWorkerQueue {
         fair_worker_memory < kMegabyte) {
         early_result.memory_limited = true;
         early_result.statistics.memory_limited = true;
-        early_result.statistics.stop_reason = "MEMORY_LIMIT";
         return early_result;
     }
 
@@ -5343,7 +4847,6 @@ struct ParallelWorkerQueue {
     } catch (const std::bad_alloc&) {
         early_result.memory_limited = true;
         early_result.statistics.memory_limited = true;
-        early_result.statistics.stop_reason = "MEMORY_LIMIT";
         return early_result;
     }
     ParallelControl control(config.bbr_state_limit, initial_incumbent,
@@ -5354,7 +4857,7 @@ struct ParallelWorkerQueue {
     BbrSplitResult split;
     try {
         BbrEngine splitter(
-            prepared, initial_lower_bound, initial_incumbent, 0U, false,
+            prepared, initial_lower_bound, initial_incumbent,
             splitter_config, deadline, precomputed, &control, nullptr, true);
         split = splitter.split(std::max<std::size_t>(1U, target_tasks));
     } catch (const std::bad_alloc&) {
@@ -5362,7 +4865,6 @@ struct ParallelWorkerQueue {
         split.result = early_result;
         split.result.memory_limited = true;
         split.result.statistics.memory_limited = true;
-        split.result.statistics.stop_reason = "MEMORY_LIMIT";
     }
     split.result.statistics.parallel = true;
     split.result.statistics.requested_threads = requested_config.threads;
@@ -5403,12 +4905,6 @@ struct ParallelWorkerQueue {
             control.worker_memory_peak();
         split.result.statistics.parallel_task_memory_bytes =
             actual_task_memory;
-        split.result.statistics.stop_reason = split.result.optimal
-            ? "OPTIMAL"
-            : (split.result.state_limited
-                   ? "STATE_LIMIT"
-                   : (split.result.memory_limited ? "MEMORY_LIMIT"
-                                                  : "TIME_LIMIT"));
         split.result.statistics.peak_memory_bytes = std::min(
             global_memory,
             saturated_add(
@@ -5615,8 +5111,8 @@ struct ParallelWorkerQueue {
                         const auto task_search_start = Clock::now();
                         {
                             BbrEngine engine(
-                                prepared, initial_lower_bound, incumbent, 0U,
-                                false, worker_config, deadline, precomputed,
+                                prepared, initial_lower_bound, incumbent,
+                                worker_config, deadline, precomputed,
                                 &control, &*task, false);
                             while (control.stop_reason() ==
                                        ParallelStopReason::kNone &&
@@ -5857,13 +5353,6 @@ struct ParallelWorkerQueue {
     combined.timed_out = result.timed_out;
     combined.state_limited = result.state_limited;
     combined.memory_limited = result.memory_limited;
-    combined.stop_reason = result.optimal
-        ? "OPTIMAL"
-        : (result.timed_out
-               ? "TIME_LIMIT"
-               : (result.state_limited
-                      ? "STATE_LIMIT"
-                      : (result.memory_limited ? "MEMORY_LIMIT" : "STOPPED")));
     result.statistics = std::move(combined);
     return result;
 }
@@ -5895,71 +5384,25 @@ BbrResult run_branch_bound_remember(const PreparedInstance& prepared,
         result.certified_lower_bound += prepared.fixed_bin_offset;
         return result;
     };
-    if (config.bbr_heuristic_load_limit > 0U) {
-        BbrResult heuristic;
-        {
-            BbrEngine engine(prepared, residual_lower_bound,
-                             prepared.search_incumbent,
-                             config.bbr_heuristic_load_limit, true,
-                             config, deadline);
-            heuristic = engine.solve();
-        }
-        if (heuristic.optimal || heuristic.timed_out ||
-            heuristic.state_limited || heuristic.memory_limited ||
-            !heuristic.statistics.load_generation_truncated ||
-            deadline.expired()) {
-            if (!heuristic.optimal && !heuristic.state_limited &&
-                !heuristic.memory_limited &&
-                deadline.expired()) {
-                heuristic.timed_out = true;
-                heuristic.statistics.timed_out = true;
-                heuristic.statistics.stop_reason = "TIME_LIMIT";
-            }
-            return restore_full_bound(std::move(heuristic));
-        }
-
-        Config exact_config = config;
-        const std::uint64_t heuristic_states = std::min(
-            config.bbr_state_limit, heuristic.statistics.states_created);
-        exact_config.bbr_state_limit =
-            config.bbr_state_limit - heuristic_states;
-        if (exact_config.bbr_state_limit == 0U) {
-            heuristic.state_limited = true;
-            heuristic.memory_limited = false;
-            heuristic.statistics.state_limited = true;
-            heuristic.statistics.memory_limited = false;
-            heuristic.statistics.stop_reason = "STATE_LIMIT";
-            return restore_full_bound(std::move(heuristic));
-        }
-        BbrResult exact;
-        exact = run_parallel_exact_bbr(
-            prepared, residual_lower_bound, heuristic.incumbent, exact_config,
-            deadline);
-        merge_heuristic_statistics(exact.statistics,
-                                   heuristic.statistics);
-        return restore_full_bound(std::move(exact));
-    }
-
-    constexpr double kLegacyDffProbeSeconds = 0.001;
-    constexpr std::uint64_t kLegacyDffProbeStates = 500U;
+    constexpr double kPreliminaryDffProbeSeconds = 0.001;
+    constexpr std::uint64_t kPreliminaryDffProbeStates = 500U;
     if (config.bbr_enable_complete_dff &&
         complete_dff_applicable(prepared.search_instance) &&
-        config.bbr_state_limit > kLegacyDffProbeStates &&
-        deadline.remaining_seconds() > 2.0 * kLegacyDffProbeSeconds) {
+        config.bbr_state_limit > kPreliminaryDffProbeStates &&
+        deadline.remaining_seconds() > 2.0 * kPreliminaryDffProbeSeconds) {
         Config preliminary_config = config;
         preliminary_config.bbr_enable_complete_dff = false;
         preliminary_config.bbr_enable_generalized_item_dominance = false;
         preliminary_config.bbr_enable_binlb = false;
-        preliminary_config.bbr_enable_conflict_binlb = false;
         preliminary_config.bbr_state_limit = std::min(
-            config.bbr_state_limit, kLegacyDffProbeStates);
+            config.bbr_state_limit, kPreliminaryDffProbeStates);
         Deadline preliminary_deadline(std::min(
-            kLegacyDffProbeSeconds, deadline.remaining_seconds()));
+            kPreliminaryDffProbeSeconds, deadline.remaining_seconds()));
         BbrResult preliminary;
         {
             BbrEngine engine(prepared, residual_lower_bound,
-                             prepared.search_incumbent, 0U, false,
-                             preliminary_config, preliminary_deadline);
+                             prepared.search_incumbent, preliminary_config,
+                             preliminary_deadline);
             preliminary = engine.solve();
         }
         preliminary.statistics.complete_dff_enabled =
@@ -5976,7 +5419,6 @@ BbrResult run_branch_bound_remember(const PreparedInstance& prepared,
                 preliminary.statistics.timed_out = true;
                 preliminary.statistics.state_limited = false;
                 preliminary.statistics.memory_limited = false;
-                preliminary.statistics.stop_reason = "TIME_LIMIT";
             }
             return restore_full_bound(std::move(preliminary));
         }
@@ -5992,7 +5434,6 @@ BbrResult run_branch_bound_remember(const PreparedInstance& prepared,
             preliminary.statistics.state_limited = true;
             preliminary.statistics.memory_limited = false;
             preliminary.statistics.timed_out = false;
-            preliminary.statistics.stop_reason = "STATE_LIMIT";
             return restore_full_bound(std::move(preliminary));
         }
         BbrResult exact = run_parallel_exact_bbr(

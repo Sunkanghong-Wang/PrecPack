@@ -55,7 +55,7 @@ void canonicalize(Candidate& candidate) {
 DffTransformSet build_complete_dff_transforms(
     const std::vector<int>& weights,
     int capacity,
-    bool include_legacy_dff3) {
+    bool include_dff3_family) {
     if (capacity <= 0 || weights.empty()) {
         throw std::invalid_argument("invalid DFF input");
     }
@@ -97,7 +97,7 @@ DffTransformSet build_complete_dff_transforms(
 
     std::vector<Candidate> candidates;
     candidates.reserve(101U * thresholds.size() +
-                       (include_legacy_dff3 ? 500U : 0U));
+                       (include_dff3_family ? 500U : 0U));
     const auto append_compositions = [&](std::int64_t base_capacity,
                                          const std::vector<std::int64_t>& base) {
         for (const Threshold threshold : thresholds) {
@@ -145,7 +145,7 @@ DffTransformSet build_complete_dff_transforms(
         append_compositions(transformed_capacity, base);
     }
 
-    if (include_legacy_dff3) {
+    if (include_dff3_family) {
         for (int numerator = 1; numerator <= 500; ++numerator) {
             Candidate candidate;
             candidate.capacity = 1000 / numerator;

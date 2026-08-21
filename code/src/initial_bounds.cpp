@@ -2,11 +2,7 @@
 
 #include "precpack/algorithms.hpp"
 #include "precpack/bbr.hpp"
-#include "precpack/build_config.hpp"
 #include "precpack/exact_arithmetic.hpp"
-#if PRECPACK_HAS_GUROBI
-#include "precpack/column_generation.hpp"
-#endif
 
 #include <algorithm>
 #include <array>
@@ -2796,751 +2792,6 @@ private:
     std::uint64_t transitions_generated_ = 0;
 };
 
-class AlnsHeuristic {
-public:
-    AlnsHeuristic(const WorkInstance& instance,
-                  int lower_bound,
-                  JavaRandom& random,
-                  const Deadline& deadline)
-        : instance_(instance),
-          lower_bound_(lower_bound),
-          random_(random),
-          deadline_(deadline),
-          push_target_bins_(static_cast<std::size_t>(instance.n)) {
-        item_weight_.reserve(static_cast<std::size_t>(instance.n));
-        for (const WorkItem& item : instance.items) {
-            item_weight_.push_back(item.weight);
-        }
-    }
-
-    [[nodiscard]] HeuristicState solve(const HeuristicState& initial) {
-        for (auto& targets : push_target_bins_) {
-            targets.reserve(static_cast<std::size_t>(initial.bin_count));
-        }
-        bin_minimum_weight_.resize(static_cast<std::size_t>(initial.bin_count));
-        bin_maximum_weight_.resize(static_cast<std::size_t>(initial.bin_count));
-        State current(instance_, initial);
-        State best = current;
-        const int k_max = std::max(8, instance_.n / 15);
-        const std::int64_t maximum_no_improvement =
-            static_cast<std::int64_t>(instance_.n) * instance_.n;
-        std::int64_t no_improvement = 0;
-
-        while (!deadline_.expired()) {
-            local_search(current);
-            if (current.score > best.score) {
-                best = current;
-                no_improvement = -1;
-            }
-            if (best.bin_count == lower_bound_ || deadline_.expired()) {
-                break;
-            }
-
-            const int rho = random_.next_int(k_max) + 1;
-            std::optional<State> repaired = destroy_and_repair(rho, current);
-            if (!repaired.has_value()) {
-                break;
-            }
-            current = std::move(*repaired);
-            if (current.score > best.score) {
-                best = current;
-                no_improvement = -1;
-            }
-            if (best.bin_count == lower_bound_) {
-                break;
-            }
-            if (++no_improvement > maximum_no_improvement) {
-                break;
-            }
-        }
-
-        HeuristicState result(instance_.n);
-        result.bin = std::move(best.bin);
-        result.bin_count = best.bin_count;
-        result.remaining_capacity.resize(static_cast<std::size_t>(best.bin_count));
-        for (int bin = 0; bin < best.bin_count; ++bin) {
-            result.remaining_capacity[static_cast<std::size_t>(bin)] =
-                instance_.capacity - best.load[static_cast<std::size_t>(bin)];
-        }
-        return result;
-    }
-
-private:
-    struct State {
-        State() = default;
-
-        State(const WorkInstance& instance, const HeuristicState& source)
-            : bin(source.bin),
-              bin_count(source.bin_count),
-              load(static_cast<std::size_t>(source.bin_count), 0),
-              packed(static_cast<std::size_t>(source.bin_count)) {
-            for (auto& list : packed) {
-                list.reserve(static_cast<std::size_t>(instance.n));
-            }
-            for (int item = 0; item < instance.n; ++item) {
-                const int item_bin = bin[static_cast<std::size_t>(item)];
-                load[static_cast<std::size_t>(item_bin)] +=
-                    instance.items[static_cast<std::size_t>(item)].weight;
-                packed[static_cast<std::size_t>(item_bin)].push_back(item);
-            }
-            recompute_score(instance.capacity);
-        }
-
-        void recompute_score(int capacity) noexcept {
-            score = -square(capacity) * bin_count;
-            for (const int value : load) {
-                score += square(value);
-            }
-        }
-
-        static std::int64_t square(std::int64_t value) noexcept {
-            return value * value;
-        }
-
-        std::int64_t score = 0;
-        std::vector<int> bin;
-        int bin_count = 0;
-        std::vector<int> load;
-        std::vector<std::vector<int>> packed;
-    };
-
-    [[nodiscard]] static std::int64_t square(std::int64_t value) noexcept {
-        return value * value;
-    }
-
-    [[nodiscard]] bool holds_precedence(int item,
-                                        int bin,
-                                        const std::vector<int>& assignment) const {
-        for (int p = instance_.pred_offset[static_cast<std::size_t>(item)];
-             p < instance_.pred_offset[static_cast<std::size_t>(item + 1)]; ++p) {
-            const int predecessor = instance_.pred_from[static_cast<std::size_t>(p)];
-            const int separation =
-                instance_.arcs[static_cast<std::size_t>(
-                    instance_.pred_arc[static_cast<std::size_t>(p)])]
-                    .separation;
-            if (bin - assignment[static_cast<std::size_t>(predecessor)] < separation) {
-                return false;
-            }
-        }
-        for (int p = instance_.succ_offset[static_cast<std::size_t>(item)];
-             p < instance_.succ_offset[static_cast<std::size_t>(item + 1)]; ++p) {
-            const int successor = instance_.succ_to[static_cast<std::size_t>(p)];
-            const int separation =
-                instance_.arcs[static_cast<std::size_t>(
-                    instance_.succ_arc[static_cast<std::size_t>(p)])]
-                    .separation;
-            if (assignment[static_cast<std::size_t>(successor)] - bin < separation) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    void reduce_empty_bins(State& state) const {
-        for (int empty = static_cast<int>(state.load.size()) - 1; empty >= 0;
-             --empty) {
-            if (state.load[static_cast<std::size_t>(empty)] != 0) {
-                continue;
-            }
-            bool removable = true;
-            if (empty > 0 && empty + 1 < static_cast<int>(state.load.size())) {
-                for (int item = 0; item < instance_.n; ++item) {
-                    const int old_bin = state.bin[static_cast<std::size_t>(item)];
-                    if (old_bin <= empty) {
-                        continue;
-                    }
-                    const int new_bin = old_bin - 1;
-                    for (int p = instance_.pred_offset[static_cast<std::size_t>(item)];
-                         p < instance_.pred_offset[static_cast<std::size_t>(item + 1)];
-                         ++p) {
-                        const int predecessor =
-                            instance_.pred_from[static_cast<std::size_t>(p)];
-                        const int old_predecessor_bin =
-                            state.bin[static_cast<std::size_t>(predecessor)];
-                        const int new_predecessor_bin =
-                            old_predecessor_bin > empty ? old_predecessor_bin - 1
-                                                        : old_predecessor_bin;
-                        const int separation =
-                            instance_.arcs[static_cast<std::size_t>(
-                                instance_.pred_arc[static_cast<std::size_t>(p)])]
-                                .separation;
-                        if (new_bin - new_predecessor_bin < separation) {
-                            removable = false;
-                            break;
-                        }
-                    }
-                    if (removable) {
-                        for (int p =
-                                 instance_.succ_offset[static_cast<std::size_t>(item)];
-                             p < instance_.succ_offset[static_cast<std::size_t>(item + 1)];
-                             ++p) {
-                            const int successor =
-                                instance_.succ_to[static_cast<std::size_t>(p)];
-                            const int old_successor_bin =
-                                state.bin[static_cast<std::size_t>(successor)];
-                            const int new_successor_bin =
-                                old_successor_bin > empty ? old_successor_bin - 1
-                                                          : old_successor_bin;
-                            const int separation =
-                                instance_.arcs[static_cast<std::size_t>(
-                                    instance_.succ_arc[static_cast<std::size_t>(p)])]
-                                    .separation;
-                            if (new_successor_bin - new_bin < separation) {
-                                removable = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            if (!removable) {
-                continue;
-            }
-            state.packed.erase(state.packed.begin() + empty);
-            state.load.erase(state.load.begin() + empty);
-            --state.bin_count;
-            for (int& item_bin : state.bin) {
-                if (item_bin > empty) {
-                    --item_bin;
-                }
-            }
-            state.score += square(instance_.capacity);
-        }
-    }
-
-    [[nodiscard]] bool relocate(State& state) const {
-        for (int old_bin = 0; old_bin < static_cast<int>(state.packed.size());
-             ++old_bin) {
-            const int old_size =
-                static_cast<int>(state.packed[static_cast<std::size_t>(old_bin)].size());
-            for (int position = 0; position < old_size; ++position) {
-                const int item = state.packed[static_cast<std::size_t>(old_bin)]
-                                             [static_cast<std::size_t>(position)];
-                const int maximum_bin =
-                    state.bin_count - instance_.back[static_cast<std::size_t>(item)] - 1;
-                const int weight =
-                    instance_.items[static_cast<std::size_t>(item)].weight;
-                for (int new_bin = instance_.front[static_cast<std::size_t>(item)];
-                     new_bin <= maximum_bin; ++new_bin) {
-                    if (new_bin == old_bin) {
-                        continue;
-                    }
-                    const int new_load =
-                        state.load[static_cast<std::size_t>(new_bin)] + weight;
-                    if (new_load > instance_.capacity) {
-                        continue;
-                    }
-                    const int old_load =
-                        state.load[static_cast<std::size_t>(old_bin)] - weight;
-                    const std::int64_t new_score =
-                        state.score - square(state.load[static_cast<std::size_t>(old_bin)]) -
-                        square(state.load[static_cast<std::size_t>(new_bin)]) +
-                        square(old_load) + square(new_load);
-                    if (new_score <= state.score) {
-                        continue;
-                    }
-                    state.bin[static_cast<std::size_t>(item)] = new_bin;
-                    if (holds_precedence(item, new_bin, state.bin)) {
-                        state.score = new_score;
-                        state.packed[static_cast<std::size_t>(old_bin)].erase(
-                            state.packed[static_cast<std::size_t>(old_bin)].begin() +
-                            position);
-                        state.packed[static_cast<std::size_t>(new_bin)].push_back(item);
-                        state.load[static_cast<std::size_t>(old_bin)] = old_load;
-                        state.load[static_cast<std::size_t>(new_bin)] = new_load;
-                        if (old_load == 0) {
-                            reduce_empty_bins(state);
-                        }
-                        return true;
-                    }
-                    state.bin[static_cast<std::size_t>(item)] = old_bin;
-                }
-            }
-        }
-        return false;
-    }
-
-    [[nodiscard]] bool swap_two_for_one(State& state) const {
-        for (int bin = 0; bin < state.bin_count; ++bin) {
-            int minimum = std::numeric_limits<int>::max();
-            int maximum = 0;
-            for (const int item : state.packed[static_cast<std::size_t>(bin)]) {
-                const int weight = item_weight_[static_cast<std::size_t>(item)];
-                minimum = std::min(minimum, weight);
-                maximum = std::max(maximum, weight);
-            }
-            bin_minimum_weight_[static_cast<std::size_t>(bin)] = minimum;
-            bin_maximum_weight_[static_cast<std::size_t>(bin)] = maximum;
-        }
-        for (int first_bin = 0;
-             first_bin < static_cast<int>(state.packed.size()); ++first_bin) {
-            auto& first_list = state.packed[static_cast<std::size_t>(first_bin)];
-            const int first_size = static_cast<int>(first_list.size());
-            if (first_size <= 1) {
-                continue;
-            }
-            const int old_first_load = state.load[static_cast<std::size_t>(first_bin)];
-            const std::int64_t old_first_square = square(old_first_load);
-            for (int first_position = 0; first_position < first_size;
-                 ++first_position) {
-                const int first_item = first_list[static_cast<std::size_t>(first_position)];
-                const int first_weight =
-                    item_weight_[static_cast<std::size_t>(first_item)];
-                for (int second_position = first_position + 1;
-                     second_position < first_size; ++second_position) {
-                    const int second_item =
-                        first_list[static_cast<std::size_t>(second_position)];
-                    const int second_weight =
-                        item_weight_[static_cast<std::size_t>(second_item)];
-                    const int pair_weight = first_weight + second_weight;
-                    const int minimum_bin = std::max(
-                        instance_.front[static_cast<std::size_t>(first_item)],
-                        instance_.front[static_cast<std::size_t>(second_item)]);
-                    const int maximum_bin = std::min(
-                        state.bin_count -
-                            instance_.back[static_cast<std::size_t>(first_item)] - 1,
-                        state.bin_count -
-                            instance_.back[static_cast<std::size_t>(second_item)] - 1);
-                    for (int second_bin = minimum_bin; second_bin <= maximum_bin;
-                         ++second_bin) {
-                        if (second_bin == first_bin) {
-                            continue;
-                        }
-                        const int old_second_load =
-                            state.load[static_cast<std::size_t>(second_bin)];
-                        const int minimum_third_weight =
-                            std::max(0, old_second_load + pair_weight -
-                                            instance_.capacity);
-                        const int maximum_third_weight =
-                            instance_.capacity - old_first_load + pair_weight;
-                        if (bin_maximum_weight_[static_cast<std::size_t>(second_bin)] <
-                                minimum_third_weight ||
-                            bin_minimum_weight_[static_cast<std::size_t>(second_bin)] >
-                                maximum_third_weight) {
-                            continue;
-                        }
-                        auto& second_list =
-                            state.packed[static_cast<std::size_t>(second_bin)];
-                        const int second_size = static_cast<int>(second_list.size());
-                        const int first_load_without_pair =
-                            old_first_load - pair_weight;
-                        const int second_load_with_pair =
-                            old_second_load + pair_weight;
-                        const std::int64_t constant_score_change =
-                            square(first_load_without_pair) - old_first_square +
-                            square(second_load_with_pair) -
-                            square(old_second_load);
-                        const std::int64_t linear_score_coefficient =
-                            2LL * (first_load_without_pair - second_load_with_pair);
-                        for (int third_position = 0; third_position < second_size;
-                             ++third_position) {
-                            const int third_item =
-                                second_list[static_cast<std::size_t>(third_position)];
-                            const int third_weight =
-                                item_weight_[static_cast<std::size_t>(third_item)];
-                            if (third_weight < minimum_third_weight ||
-                                third_weight > maximum_third_weight) {
-                                continue;
-                            }
-                            const int first_load =
-                                first_load_without_pair + third_weight;
-                            const int second_load =
-                                second_load_with_pair - third_weight;
-                            const std::int64_t score_change =
-                                constant_score_change +
-                                linear_score_coefficient * third_weight +
-                                2LL * third_weight * third_weight;
-                            if (score_change <= 0) {
-                                continue;
-                            }
-                            const std::int64_t new_score =
-                                state.score + score_change;
-                            state.bin[static_cast<std::size_t>(first_item)] = second_bin;
-                            state.bin[static_cast<std::size_t>(second_item)] = second_bin;
-                            state.bin[static_cast<std::size_t>(third_item)] = first_bin;
-                            if (holds_precedence(first_item, second_bin, state.bin) &&
-                                holds_precedence(second_item, second_bin, state.bin) &&
-                                holds_precedence(third_item, first_bin, state.bin)) {
-                                state.score = new_score;
-                                first_list.erase(first_list.begin() + second_position);
-                                first_list.erase(first_list.begin() + first_position);
-                                second_list.erase(second_list.begin() + third_position);
-                                second_list.push_back(first_item);
-                                second_list.push_back(second_item);
-                                first_list.push_back(third_item);
-                                state.load[static_cast<std::size_t>(first_bin)] = first_load;
-                                state.load[static_cast<std::size_t>(second_bin)] = second_load;
-                                return true;
-                            }
-                            state.bin[static_cast<std::size_t>(first_item)] = first_bin;
-                            state.bin[static_cast<std::size_t>(second_item)] = first_bin;
-                            state.bin[static_cast<std::size_t>(third_item)] = second_bin;
-                        }
-                    }
-                }
-            }
-        }
-        return false;
-    }
-
-    void prepare_push_targets(const State& state) {
-        const int bin_count = state.bin_count;
-        push_load_levels_ = state.load;
-        std::sort(push_load_levels_.begin(), push_load_levels_.end());
-        push_load_levels_.erase(
-            std::unique(push_load_levels_.begin(), push_load_levels_.end()),
-            push_load_levels_.end());
-        const int level_count = static_cast<int>(push_load_levels_.size());
-        push_bit_blocks_ = (bin_count + 63) / 64;
-        const std::size_t bit_cells =
-            static_cast<std::size_t>(instance_.n) * level_count * push_bit_blocks_;
-        push_use_load_bitsets_ = bit_cells <= 500'000U;
-        if (push_use_load_bitsets_) {
-            push_candidate_bits_.assign(bit_cells, 0U);
-            push_bin_load_rank_.resize(static_cast<std::size_t>(bin_count));
-            for (int bin = 0; bin < bin_count; ++bin) {
-                push_bin_load_rank_[static_cast<std::size_t>(bin)] =
-                    static_cast<int>(std::lower_bound(
-                                         push_load_levels_.begin(),
-                                         push_load_levels_.end(),
-                                         state.load[static_cast<std::size_t>(bin)]) -
-                                     push_load_levels_.begin());
-            }
-        }
-        for (int item = 0; item < instance_.n; ++item) {
-            auto& targets = push_target_bins_[static_cast<std::size_t>(item)];
-            targets.clear();
-            const int weight =
-                item_weight_[static_cast<std::size_t>(item)];
-            const int maximum_bin =
-                state.bin_count - instance_.back[static_cast<std::size_t>(item)] - 1;
-            for (int bin = instance_.front[static_cast<std::size_t>(item)];
-                 bin <= maximum_bin; ++bin) {
-                if (state.load[static_cast<std::size_t>(bin)] + weight <=
-                    instance_.capacity) {
-                    if (push_use_load_bitsets_) {
-                        const int rank =
-                            push_bin_load_rank_[static_cast<std::size_t>(bin)];
-                        const std::size_t row =
-                            (static_cast<std::size_t>(item) * level_count + rank) *
-                            push_bit_blocks_;
-                        push_candidate_bits_[row +
-                                             static_cast<std::size_t>(bin) / 64U] |=
-                            std::uint64_t{1}
-                            << (static_cast<unsigned>(bin) & 63U);
-                    } else {
-                        targets.push_back(bin);
-                    }
-                }
-            }
-        }
-        if (push_use_load_bitsets_) {
-            for (int item = 0; item < instance_.n; ++item) {
-                for (int rank = level_count - 2; rank >= 0; --rank) {
-                    const std::size_t row =
-                        (static_cast<std::size_t>(item) * level_count + rank) *
-                        push_bit_blocks_;
-                    const std::size_t next = row + push_bit_blocks_;
-                    for (int block = 0; block < push_bit_blocks_; ++block) {
-                        push_candidate_bits_[row + block] |=
-                            push_candidate_bits_[next + block];
-                    }
-                }
-            }
-            if (instance_.capacity <= 1'000'000) {
-                push_threshold_rank_.resize(
-                    static_cast<std::size_t>(instance_.capacity + 1));
-                int rank = 0;
-                for (int threshold = 0; threshold <= instance_.capacity;
-                     ++threshold) {
-                    while (rank < level_count &&
-                           push_load_levels_[static_cast<std::size_t>(rank)] <
-                               threshold) {
-                        ++rank;
-                    }
-                    push_threshold_rank_[static_cast<std::size_t>(threshold)] = rank;
-                }
-            } else {
-                push_threshold_rank_.clear();
-            }
-        }
-    }
-
-    [[nodiscard]] bool push(State& state) {
-        prepare_push_targets(state);
-        for (int first_bin = 0;
-             first_bin < static_cast<int>(state.packed.size()); ++first_bin) {
-            auto& first_list = state.packed[static_cast<std::size_t>(first_bin)];
-            const int first_size = static_cast<int>(first_list.size());
-            const int old_first_load = state.load[static_cast<std::size_t>(first_bin)];
-            for (int first_position = 0; first_position < first_size;
-                 ++first_position) {
-                const int first_item = first_list[static_cast<std::size_t>(first_position)];
-                const int first_weight =
-                    item_weight_[static_cast<std::size_t>(first_item)];
-                const int first_load = old_first_load - first_weight;
-                const int first_maximum_bin =
-                    state.bin_count -
-                    instance_.back[static_cast<std::size_t>(first_item)] - 1;
-                for (int second_bin =
-                         instance_.front[static_cast<std::size_t>(first_item)];
-                     second_bin <= first_maximum_bin; ++second_bin) {
-                    if (second_bin == first_bin) {
-                        continue;
-                    }
-                    auto& second_list =
-                        state.packed[static_cast<std::size_t>(second_bin)];
-                    const int second_size = static_cast<int>(second_list.size());
-                    const int old_second_load =
-                        state.load[static_cast<std::size_t>(second_bin)];
-                    for (int second_position = 0; second_position < second_size;
-                         ++second_position) {
-                        const int second_item =
-                            second_list[static_cast<std::size_t>(second_position)];
-                        const int second_weight =
-                            item_weight_[static_cast<std::size_t>(second_item)];
-                        const int second_load =
-                            old_second_load + first_weight - second_weight;
-                        if (second_load > instance_.capacity) {
-                            continue;
-                        }
-                        const std::int64_t constant_score_change =
-                            -square(old_first_load) - square(old_second_load) +
-                            square(first_load) + square(second_load) +
-                            square(second_weight);
-                        const int minimum_third_load =
-                            constant_score_change > 0
-                                ? 0
-                                : static_cast<int>(
-                                      (-constant_score_change) /
-                                          (2LL * second_weight) +
-                                      1);
-                        const auto try_third_bin = [&](int third_bin) {
-                            if (third_bin == second_bin || third_bin == first_bin) {
-                                return false;
-                            }
-                            const int old_third_load =
-                                state.load[static_cast<std::size_t>(third_bin)];
-                            if (old_third_load < minimum_third_load) {
-                                return false;
-                            }
-                            const int third_load = old_third_load + second_weight;
-                            const std::int64_t new_score =
-                                state.score + constant_score_change +
-                                2LL * old_third_load * second_weight;
-                            if (new_score <= state.score) {
-                                return false;
-                            }
-                            state.bin[static_cast<std::size_t>(first_item)] = second_bin;
-                            state.bin[static_cast<std::size_t>(second_item)] = third_bin;
-                            if (holds_precedence(first_item, second_bin, state.bin) &&
-                                holds_precedence(second_item, third_bin, state.bin)) {
-                                state.score = new_score;
-                                first_list.erase(first_list.begin() + first_position);
-                                second_list.erase(second_list.begin() + second_position);
-                                second_list.push_back(first_item);
-                                state.packed[static_cast<std::size_t>(third_bin)]
-                                    .push_back(second_item);
-                                state.load[static_cast<std::size_t>(first_bin)] = first_load;
-                                state.load[static_cast<std::size_t>(second_bin)] = second_load;
-                                state.load[static_cast<std::size_t>(third_bin)] = third_load;
-                                if (first_load == 0) {
-                                    reduce_empty_bins(state);
-                                }
-                                return true;
-                            }
-                            state.bin[static_cast<std::size_t>(first_item)] = first_bin;
-                            state.bin[static_cast<std::size_t>(second_item)] = second_bin;
-                            return false;
-                        };
-
-                        if (push_use_load_bitsets_) {
-                            if (minimum_third_load > instance_.capacity) {
-                                continue;
-                            }
-                            const int level_count =
-                                static_cast<int>(push_load_levels_.size());
-                            const int rank = !push_threshold_rank_.empty()
-                                                 ? push_threshold_rank_[static_cast<std::size_t>(
-                                                       minimum_third_load)]
-                                                 : static_cast<int>(std::lower_bound(
-                                                       push_load_levels_.begin(),
-                                                       push_load_levels_.end(),
-                                                       minimum_third_load) -
-                                                   push_load_levels_.begin());
-                            if (rank >= level_count) {
-                                continue;
-                            }
-                            const std::size_t row =
-                                (static_cast<std::size_t>(second_item) * level_count +
-                                 rank) *
-                                push_bit_blocks_;
-                            for (int block = 0; block < push_bit_blocks_; ++block) {
-                                std::uint64_t candidates =
-                                    push_candidate_bits_[row + block];
-                                while (candidates != 0U) {
-                                    const unsigned offset =
-                                        std::countr_zero(candidates);
-                                    const int third_bin = block * 64 +
-                                                          static_cast<int>(offset);
-                                    if (try_third_bin(third_bin)) {
-                                        return true;
-                                    }
-                                    candidates &= candidates - 1U;
-                                }
-                            }
-                        } else {
-                            const auto& third_targets =
-                                push_target_bins_[static_cast<std::size_t>(second_item)];
-                            for (const int third_bin : third_targets) {
-                                if (try_third_bin(third_bin)) {
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return false;
-    }
-
-    void local_search(State& state) {
-        bool improved = true;
-        while (improved && !deadline_.expired()) {
-            improved = relocate(state);
-            improved = swap_two_for_one(state) || improved;
-            improved = push(state) || improved;
-            if (state.bin_count == lower_bound_) {
-                break;
-            }
-        }
-    }
-
-    [[nodiscard]] bool repair_item_feasible(const State& state,
-                                            int item,
-                                            int bin) const {
-        for (int p = instance_.pred_offset[static_cast<std::size_t>(item)];
-             p < instance_.pred_offset[static_cast<std::size_t>(item + 1)]; ++p) {
-            const int predecessor = instance_.pred_from[static_cast<std::size_t>(p)];
-            const int predecessor_bin =
-                state.bin[static_cast<std::size_t>(predecessor)];
-            const int separation =
-                instance_.arcs[static_cast<std::size_t>(
-                    instance_.pred_arc[static_cast<std::size_t>(p)])]
-                    .separation;
-            if (predecessor_bin < 0 || bin - predecessor_bin < separation) {
-                return false;
-            }
-        }
-        for (int p = instance_.succ_offset[static_cast<std::size_t>(item)];
-             p < instance_.succ_offset[static_cast<std::size_t>(item + 1)]; ++p) {
-            const int successor = instance_.succ_to[static_cast<std::size_t>(p)];
-            const int successor_bin = state.bin[static_cast<std::size_t>(successor)];
-            const int separation =
-                instance_.arcs[static_cast<std::size_t>(
-                    instance_.succ_arc[static_cast<std::size_t>(p)])]
-                    .separation;
-            if (successor_bin >= 0 && successor_bin - bin < separation) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    [[nodiscard]] std::optional<State> destroy_and_repair(
-        int initial_rho,
-        const State& current) {
-        int rho = initial_rho;
-        while (!deadline_.expired()) {
-            State temporary = current;
-            std::vector<int> removed_items;
-            removed_items.reserve(static_cast<std::size_t>(instance_.n));
-            for (int destroyed = 0; destroyed < rho; ++destroyed) {
-                const int bin = random_.next_int(
-                    static_cast<int>(temporary.packed.size()));
-                auto& list = temporary.packed[static_cast<std::size_t>(bin)];
-                removed_items.insert(removed_items.end(), list.begin(), list.end());
-                list.clear();
-                temporary.load[static_cast<std::size_t>(bin)] = 0;
-            }
-            for (const int item : removed_items) {
-                temporary.bin[static_cast<std::size_t>(item)] = -1;
-            }
-
-            bool packed_one = false;
-            do {
-                packed_one = false;
-                for (std::size_t position = 0; position < removed_items.size();
-                     ++position) {
-                    const int item = removed_items[position];
-                    const int weight =
-                        instance_.items[static_cast<std::size_t>(item)].weight;
-                    for (int bin = 0; bin < temporary.bin_count; ++bin) {
-                        const int new_load =
-                            temporary.load[static_cast<std::size_t>(bin)] + weight;
-                        if (new_load > instance_.capacity ||
-                            !repair_item_feasible(temporary, item, bin)) {
-                            continue;
-                        }
-                        temporary.load[static_cast<std::size_t>(bin)] = new_load;
-                        temporary.bin[static_cast<std::size_t>(item)] = bin;
-                        temporary.packed[static_cast<std::size_t>(bin)].push_back(item);
-                        removed_items.erase(removed_items.begin() +
-                                            static_cast<std::ptrdiff_t>(position));
-                        packed_one = true;
-                        break;
-                    }
-                    if (packed_one) {
-                        break;
-                    }
-                }
-            } while (packed_one);
-
-            if (removed_items.empty()) {
-                reduce_empty_bins(temporary);
-                temporary.recompute_score(instance_.capacity);
-                return temporary;
-            }
-            if (--rho == 1) {
-                rho = initial_rho;
-            }
-        }
-        return std::nullopt;
-    }
-
-    const WorkInstance& instance_;
-    int lower_bound_;
-    JavaRandom& random_;
-    const Deadline& deadline_;
-    std::vector<int> item_weight_;
-    std::vector<std::vector<int>> push_target_bins_;
-    bool push_use_load_bitsets_ = false;
-    int push_bit_blocks_ = 0;
-    std::vector<int> push_load_levels_;
-    std::vector<int> push_bin_load_rank_;
-    std::vector<int> push_threshold_rank_;
-    std::vector<std::uint64_t> push_candidate_bits_;
-    mutable std::vector<int> bin_minimum_weight_;
-    mutable std::vector<int> bin_maximum_weight_;
-};
-
-#if PRECPACK_HAS_GUROBI
-[[nodiscard]] Instance make_strengthened_instance(const WorkInstance& working) {
-    Instance instance;
-    instance.problem_type = working.problem_type;
-    instance.id = working.id;
-    instance.capacity = working.capacity;
-    instance.items.reserve(static_cast<std::size_t>(working.n));
-    for (int item = 0; item < working.n; ++item) {
-        instance.items.push_back(
-            Item{item, working.items[static_cast<std::size_t>(item)].weight});
-    }
-    instance.arcs = working.arcs;
-    instance.initialize();
-    return instance;
-}
-#endif
 
 [[nodiscard]] PreparedInstance make_unreduced_prepared_instance(
     const Instance& original,
@@ -3553,9 +2804,7 @@ private:
 
     Instance& search = prepared.search_instance;
     search.problem_type = original.problem_type;
-    search.precedence_graph_structure = original.precedence_graph_structure;
     search.order_strength = original.order_strength;
-    search.item_weight_distribution = original.item_weight_distribution;
     search.id = original.id;
     search.capacity = working.capacity;
     search.items.reserve(static_cast<std::size_t>(working.n));
@@ -3877,9 +3126,7 @@ private:
 
     Instance& search = prepared.search_instance;
     search.problem_type = original.problem_type;
-    search.precedence_graph_structure = original.precedence_graph_structure;
     search.order_strength = original.order_strength;
-    search.item_weight_distribution = original.item_weight_distribution;
     search.id = original.id;
     search.capacity = working.capacity;
     search.items.reserve(static_cast<std::size_t>(graph.active_count()));
@@ -3951,15 +3198,6 @@ private:
     }
     return prepared;
 }
-
-#if PRECPACK_HAS_GUROBI
-[[nodiscard]] Assignment make_work_assignment(const HeuristicState& state) {
-    Assignment assignment;
-    assignment.bin_of_item = state.bin;
-    assignment.bin_count = state.bin_count;
-    return assignment;
-}
-#endif
 
 [[nodiscard]] Assignment map_to_original(const WorkInstance& instance,
                                          const HeuristicState& state) {
@@ -4034,11 +3272,7 @@ InitialBoundsResult compute_initial_bounds(
     const Instance& original,
     const Config& config,
     Deadline& deadline,
-    Statistics& statistics,
-    const std::function<GRBEnv&()>& environment_provider) {
-#if !PRECPACK_HAS_GUROBI
-    static_cast<void>(environment_provider);
-#endif
+    Statistics& statistics) {
     InitialBoundsResult result;
     std::optional<Deadline> bounded_initialization_deadline;
     Deadline* initialization_deadline = &deadline;
@@ -4053,12 +3287,8 @@ InitialBoundsResult compute_initial_bounds(
     preprocess(working);
     statistics.preprocessing_seconds +=
         std::chrono::duration<double>(Clock::now() - preprocessing_start).count();
-    result.preprocessing_reversed = working.reversed;
-
     const auto lower_start = Clock::now();
     Bounds bounds = quick_bounds(working);
-    result.lb1 = bounds.lb1;
-    result.lb2 = bounds.lb2;
     result.lower_bound = std::max(bounds.lb1, bounds.lb2);
     statistics.lower_bound_seconds +=
         std::chrono::duration<double>(Clock::now() - lower_start).count();
@@ -4078,16 +3308,14 @@ InitialBoundsResult compute_initial_bounds(
     if (incumbent.bin_count > result.lower_bound) {
         const auto start = Clock::now();
         bounds.lb3 = compute_lb3(incumbent.bin_count, working, conflicts);
-        result.lb3 = bounds.lb3;
-        result.lower_bound = std::max(result.lower_bound, result.lb3);
+        result.lower_bound = std::max(result.lower_bound, bounds.lb3);
         statistics.lower_bound_seconds +=
             std::chrono::duration<double>(Clock::now() - start).count();
     }
     if (incumbent.bin_count > result.lower_bound) {
         const auto start = Clock::now();
         bounds.lb4 = compute_lb4(working);
-        result.lb4 = bounds.lb4;
-        result.lower_bound = std::max(result.lower_bound, result.lb4);
+        result.lower_bound = std::max(result.lower_bound, bounds.lb4);
         statistics.lower_bound_seconds +=
             std::chrono::duration<double>(Clock::now() - start).count();
     }
@@ -4110,8 +3338,10 @@ InitialBoundsResult compute_initial_bounds(
             incumbent = std::move(candidate);
             if (incumbent.bin_count > result.lower_bound) {
                 const auto lb_start = Clock::now();
-                result.lb3 = compute_lb3(incumbent.bin_count, working, conflicts);
-                result.lower_bound = std::max(result.lower_bound, result.lb3);
+                bounds.lb3 = compute_lb3(
+                    incumbent.bin_count, working, conflicts);
+                result.lower_bound = std::max(
+                    result.lower_bound, bounds.lb3);
                 statistics.lower_bound_seconds +=
                     std::chrono::duration<double>(Clock::now() - lb_start).count();
             }
@@ -4135,12 +3365,9 @@ InitialBoundsResult compute_initial_bounds(
             probe_config.threads = 1;
             probe_config.bbr_state_limit =
                 std::min(config.bbr_state_limit, kEarlyProbeStates);
-            probe_config.bbr_heuristic_load_limit = 0U;
-            probe_config.bbr_root_cg_mode = BbrRootCgMode::kNone;
+            probe_config.bbr_enable_root_strengthening = false;
             probe_config.bbr_enable_binlb = false;
-            probe_config.bbr_enable_conflict_binlb = false;
             probe_config.bbr_enable_generalized_item_dominance = false;
-            probe_config.enable_initial_alns = false;
             Deadline probe_deadline(probe_budget);
             BbrResult probe = run_branch_bound_remember(
                 probe_prepared, result.lower_bound, probe_config,
@@ -4161,10 +3388,10 @@ InitialBoundsResult compute_initial_bounds(
                 if (!probe.optimal &&
                     incumbent.bin_count > result.lower_bound) {
                     const auto lb_start = Clock::now();
-                    result.lb3 = compute_lb3(
+                    bounds.lb3 = compute_lb3(
                         incumbent.bin_count, working, conflicts);
                     result.lower_bound =
-                        std::max(result.lower_bound, result.lb3);
+                        std::max(result.lower_bound, bounds.lb3);
                     statistics.lower_bound_seconds +=
                         std::chrono::duration<double>(Clock::now() - lb_start)
                             .count();
@@ -4196,30 +3423,18 @@ InitialBoundsResult compute_initial_bounds(
                 incumbent = std::move(candidate);
                 if (incumbent.bin_count > result.lower_bound) {
                     const auto lb_start = Clock::now();
-                    result.lb3 = compute_lb3(
+                    bounds.lb3 = compute_lb3(
                         incumbent.bin_count, working, conflicts);
                     result.lower_bound =
-                        std::max(result.lower_bound, result.lb3);
+                        std::max(result.lower_bound, bounds.lb3);
                     statistics.lower_bound_seconds +=
                         std::chrono::duration<double>(Clock::now() - lb_start)
                             .count();
                 }
             }
-            return bounded_dp.completed();
         };
 
-        const bool forward_completed =
-            run_bounded_dp(*initialization_deadline);
-        if (config.bbr_enable_bidirectional_bdp &&
-            forward_completed &&
-            incumbent.bin_count > result.lower_bound &&
-            !initialization_deadline->expired()) {
-            const Assignment original_incumbent =
-                map_to_original(working, incumbent);
-            flip_precedence_graph(working);
-            incumbent = map_from_original(working, original_incumbent);
-            run_bounded_dp(*initialization_deadline);
-        }
+        run_bounded_dp(*initialization_deadline);
     }
 
     if (config.bbr_initialization_mode &&
@@ -4233,46 +3448,6 @@ InitialBoundsResult compute_initial_bounds(
                 map_to_original(working, incumbent);
             flip_precedence_graph(working);
             incumbent = map_from_original(working, original_incumbent);
-        }
-        result.preprocessing_reversed = working.reversed;
-    }
-
-#if PRECPACK_HAS_GUROBI
-    if (config.enable_initial_column_generation &&
-        incumbent.bin_count > result.lower_bound && working.n <= 250 &&
-        !initialization_deadline->expired()) {
-        const auto start = Clock::now();
-        Instance strengthened = make_strengthened_instance(working);
-        const Assignment working_incumbent = make_work_assignment(incumbent);
-        ColumnGenerationResult cg = run_initial_bpp_column_generation(
-            environment_provider(), strengthened, working_incumbent,
-            result.lower_bound, config, *initialization_deadline, statistics);
-        result.initial_column_generation_attempted = cg.attempted;
-        result.initial_column_generation_converged = cg.converged;
-        result.lower_bound = std::max(result.lower_bound, cg.integer_lower_bound);
-        statistics.lower_bound_seconds +=
-            std::chrono::duration<double>(Clock::now() - start).count();
-    }
-#endif
-
-    if (config.enable_initial_alns &&
-        incumbent.bin_count > result.lower_bound && working.n >= 50 &&
-        !initialization_deadline->expired()) {
-        const auto start = Clock::now();
-        AlnsHeuristic alns(
-            working, result.lower_bound, random, *initialization_deadline);
-        HeuristicState candidate = alns.solve(incumbent);
-        statistics.upper_bound_seconds +=
-            std::chrono::duration<double>(Clock::now() - start).count();
-        if (better_state(candidate, incumbent)) {
-            incumbent = std::move(candidate);
-            if (incumbent.bin_count > result.lower_bound) {
-                const auto lb_start = Clock::now();
-                result.lb3 = compute_lb3(incumbent.bin_count, working, conflicts);
-                result.lower_bound = std::max(result.lower_bound, result.lb3);
-                statistics.lower_bound_seconds +=
-                    std::chrono::duration<double>(Clock::now() - lb_start).count();
-            }
         }
     }
 

@@ -209,15 +209,15 @@ void test_exact_arithmetic() {
 }
 
 void test_public_validation() {
-    bool rejected_legacy_switch = false;
+    bool rejected_removed_switch = false;
     try {
         static_cast<void>(parse({"precpack", "--problem", "bpp-p",
                                  "--instance", "case.txt",
                                  "--bbr-paper-queue-order"}));
     } catch (const std::invalid_argument&) {
-        rejected_legacy_switch = true;
+        rejected_removed_switch = true;
     }
-    require(rejected_legacy_switch,
+    require(rejected_removed_switch,
             "a removed algorithm switch remains publicly accepted");
 
     bool required_graph = false;
@@ -510,8 +510,6 @@ void test_instance_file_validation() {
 void test_bpp_profile() {
     const precpack::Config config = precpack::make_solver_config(
         precpack::ProblemKind::kBppGp, 17.0, 512);
-    require(config.exact_method == precpack::ExactMethod::kBbr,
-            "BPP-GP is not using unified BBR");
     require(config.seed == 1 && config.bbr_state_limit == 60'000'000ULL,
             "fixed reproducibility controls changed");
     require(config.threads == 1, "serial profile default changed");
@@ -524,14 +522,10 @@ void test_bpp_profile() {
     require(config.bbr_enable_paper_queue_order &&
                 config.bbr_enable_complete_dff,
             "BPP-GP 2016 queue/DFF profile changed");
-    require(config.bbr_root_cg_mode ==
-                precpack::BbrRootCgMode::kPriceAndSwitch &&
+    require(config.bbr_enable_root_strengthening &&
                 config.bbr_root_cg_time_limit_seconds == 5.0,
             "BPP-GP adaptive price-and-switch profile changed");
-    require(!config.enable_initial_alns &&
-                !config.bbr_enable_initial_alns &&
-                !config.bbr_enable_binlb &&
-                !config.bbr_enable_conflict_binlb,
+    require(!config.bbr_enable_binlb,
             "BPP-GP enabled an excluded component");
 }
 
@@ -548,9 +542,6 @@ void test_parallel_profile() {
 void test_salbp_profile() {
     const precpack::Config config = precpack::make_solver_config(
         precpack::ProblemKind::kSalbpI, 23.0, 1024);
-    require(config.exact_method == precpack::ExactMethod::kBbr &&
-                config.bbr_heuristic_load_limit == 0,
-            "SALBP-I is not using exact BBR");
     require(config.bbr_enable_jackson &&
                 !config.bbr_enable_generalized_item_dominance,
             "SALBP-I item-dominance profile changed");
@@ -571,7 +562,7 @@ void test_salbp_profile() {
     require(!config.bbr_enable_initial_bdp &&
                 !config.bbr_enable_paper_queue_order &&
                 !config.bbr_enable_closure_bound &&
-                config.bbr_root_cg_mode == precpack::BbrRootCgMode::kNone,
+                !config.bbr_enable_root_strengthening,
             "SALBP-I enabled an excluded component");
 }
 
@@ -673,7 +664,7 @@ void test_output_schema() {
 
     const std::filesystem::path incompatible_path =
         temporary_directory.path() / "incompatible.csv";
-    write_text_file(incompatible_path, "legacy_header\n");
+    write_text_file(incompatible_path, "different_header\n");
     bool rejected_incompatible_header = false;
     try {
         precpack::append_result_csv(

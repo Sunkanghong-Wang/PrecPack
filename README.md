@@ -76,7 +76,7 @@ PrecPack/
 │       ├── bbr.cpp             # Serial and shared-memory exact BBR
 │       ├── initial_bounds.cpp  # Preprocessing, bounds, and incumbents
 │       ├── root_column_generation.cpp  # Position-free root bound
-│       ├── branch_price.cpp            # Bin-indexed root bound
+│       ├── bin_indexed_root_bound.cpp  # Bin-indexed root bound
 │       ├── bin_packing_bound.cpp       # Exact residual relaxation
 │       ├── dff.cpp                     # Dual-feasible functions
 │       └── ...                         # CLI, I/O, profiles, and orchestration
@@ -134,7 +134,7 @@ The CMake option `PRECPACK_GUROBI` selects one of three build modes:
 
 Gurobi 13.0 is not required. PrecPack supports versions 9.1 through 13.x. It conditionally handles the `WORK_LIMIT` status introduced in Gurobi 9.5, and derives the matching core-library name from the version macros in `gurobi_c.h`. The finder also keeps headers and libraries within the same installation root. Versions 9.1.1 and 13.0.2 are tested; intermediate releases rely on the same public API but remain untested on the current development machine. Older Gurobi C++ libraries must be binary-compatible with the compiler used to build PrecPack.
 
-Without Gurobi, PrecPack disables initial/root column generation and Gurobi-based reference methods used by regression tests. The public SALBP-I, BPP-P, and BPP-GP interface continues to run the same complete BBR search, return validated incumbents and certified lower bounds under limits, and report `OPTIMAL` only after the BBR proof is complete. Thus Gurobi can affect running time and search statistics, but it is not required for correctness or exactness.
+Without Gurobi, PrecPack disables the optional root-strengthening models and the compact-MIP oracle used by regression tests. The public SALBP-I, BPP-P, and BPP-GP interface continues to run the same complete BBR search, return validated incumbents and certified lower bounds under limits, and report `OPTIMAL` only after the BBR proof is complete. Thus Gurobi can affect running time and search statistics, but it is not required for correctness or exactness.
 
 If a Gurobi-enabled binary is run without an accessible license, the optional root module is abandoned safely and PrecPack continues with BBR. For predictable deployment on machines without a commercial license, prefer an `OFF` build.
 
@@ -178,7 +178,7 @@ set "GUROBI_HOME=C:\path\to\gurobi\win64"
 code\scripts\build.bat --gurobi on
 ```
 
-These launchers configure a Release build, compile PrecPack, and run the test suite. Every configuration runs the Gurobi-free core exactness regressions, including brute-force oracles, state-memory collision and reopening checks, DFF and BINLB bounds, dominance rules, and structured preprocessing. When Gurobi is available, root-bound, branch-price, and compact-MIP reference tests run in addition. Compilation may use multiple jobs; solver execution remains single-threaded unless `--threads` is explicitly set.
+These launchers configure a Release build, compile PrecPack, and run the test suite. Every configuration runs the commercial-solver-free regressions for assignment validation, independent brute-force exactness oracles, DFF and BINLB bounds, initialization, resource-limit termination, the public interface, and serial/parallel agreement. When Gurobi is available, root-bound and compact-MIP oracle tests run in addition. Compilation may use multiple jobs; solver execution remains single-threaded unless `--threads` is explicitly set.
 
 The checked-in GitHub Actions workflow performs the Gurobi-free Release build and test suite on macOS, Linux, and Windows. Optional Gurobi builds remain local because they require a separately licensed installation.
 

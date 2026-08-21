@@ -4,10 +4,18 @@
 
 class GRBEnv;
 
-namespace precpack {
+namespace precpack::test {
+
+enum class OracleStatus {
+    kNotSolved,
+    kOptimal,
+    kFeasible,
+    kTimeLimit,
+    kError,
+};
 
 struct MipResult {
-    SolveStatus status = SolveStatus::kNotSolved;
+    OracleStatus status = OracleStatus::kNotSolved;
     bool has_incumbent = false;
     bool optimal = false;
     int certified_lower_bound = 0;

@@ -11,7 +11,6 @@ namespace precpack {
     const Instance& instance,
     const Assignment& incumbent,
     int lower_bound,
-    RootModelKind model,
     const Config& config,
     Deadline& deadline,
     Statistics& statistics);

@@ -2,10 +2,7 @@
 
 #include "precpack/types.hpp"
 
-#include <functional>
 #include <vector>
-
-class GRBEnv;
 
 namespace precpack {
 
@@ -31,15 +28,8 @@ struct PreparedInstance {
 };
 
 struct InitialBoundsResult {
-    int lb1 = 0;
-    int lb2 = 0;
-    int lb3 = 0;
-    int lb4 = 0;
     int lower_bound = 0;
     Assignment incumbent;
-    bool preprocessing_reversed = false;
-    bool initial_column_generation_attempted = false;
-    bool initial_column_generation_converged = false;
     bool early_bbr_attempted = false;
     bool early_bbr_optimal = false;
     BbrStatistics early_bbr_statistics;
@@ -58,7 +48,6 @@ struct InitialBoundsResult {
     const Instance& original,
     const Config& config,
     Deadline& deadline,
-    Statistics& statistics,
-    const std::function<GRBEnv&()>& environment_provider);
+    Statistics& statistics);
 
 }

@@ -24,6 +24,6 @@ struct DffTransformSet {
 [[nodiscard]] DffTransformSet build_complete_dff_transforms(
     const std::vector<int>& weights,
     int capacity,
-    bool include_legacy_dff3 = true);
+    bool include_dff3_family = true);
 
 }

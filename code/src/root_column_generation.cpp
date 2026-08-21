@@ -1,4 +1,4 @@
-#include "precpack/root_column_generation.hpp"
+#include "root_column_generation.hpp"
 
 #include "precpack/exact_arithmetic.hpp"
 
@@ -27,21 +27,15 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-inline constexpr double kPhaseOneTolerance = 1e-7;
-inline constexpr double kPaperObjectiveMultiplier = 400.0;
 inline constexpr double kMaximumObjectiveMultiplier = 400.0;
 inline constexpr double kScaledObjectiveTarget = 900000.0;
 inline constexpr double kGurobiOptimalityTolerance = 1e-9;
 inline constexpr double kPricingResolutionSafety = 1.5;
 
-[[nodiscard]] double rmp_objective_multiplier(RootModelKind kind,
-                                              int item_count,
-                                              int upper_bound) {
-    const int maximum_unscaled_objective =
-        kind == RootModelKind::kM ? upper_bound : item_count;
+[[nodiscard]] double rmp_objective_multiplier(int upper_bound) {
     const double range_limited = std::floor(
         kScaledObjectiveTarget /
-        static_cast<double>(std::max(1, maximum_unscaled_objective)));
+        static_cast<double>(std::max(1, upper_bound)));
     return std::clamp(range_limited, 1.0, kMaximumObjectiveMultiplier);
 }
 
@@ -136,22 +130,18 @@ public:
 
     PositionFreeMaster(GRBEnv& environment,
                        const Instance& instance,
-                       RootModelKind kind,
                        int lower_bound,
                        int upper_bound,
-                       const Config& config)
-        : kind_(kind),
-          objective_multiplier_(rmp_objective_multiplier(
-              kind, instance.size(), upper_bound)),
-          model_(environment) {
-        if (kind_ != RootModelKind::kFixedK &&
-            kind_ != RootModelKind::kM) {
-            throw std::invalid_argument(
-                "position-free master requires fixed-k or m model");
-        }
+        const Config& config)
+        : objective_multiplier_(rmp_objective_multiplier(upper_bound)),
+          model_(environment),
+          horizon_(model_.addVar(
+              static_cast<double>(lower_bound),
+              static_cast<double>(upper_bound), objective_multiplier_,
+              GRB_CONTINUOUS)) {
         model_.set(GRB_IntParam_Threads, 1);
         model_.set(GRB_IntParam_Seed, config.seed);
-        model_.set(GRB_IntParam_OutputFlag, config.gurobi_log ? 1 : 0);
+        model_.set(GRB_IntParam_OutputFlag, 0);
         model_.set(GRB_IntParam_Presolve, 0);
         model_.set(GRB_IntParam_Method, 0);
         model_.set(GRB_IntParam_NumericFocus, 2);
@@ -159,39 +149,16 @@ public:
         model_.set(GRB_DoubleParam_FeasibilityTol, 1e-9);
         model_.set(GRB_DoubleParam_OptimalityTol, 1e-9);
 
-        if (kind_ == RootModelKind::kM) {
-            horizon_.emplace(model_.addVar(
-                static_cast<double>(lower_bound),
-                static_cast<double>(upper_bound), objective_multiplier_,
-                GRB_CONTINUOUS));
-            model_.update();
-        }
+        model_.update();
 
         item_rows_.reserve(static_cast<std::size_t>(instance.size()));
         for (int item = 0; item < instance.size(); ++item) {
             item_rows_.push_back(
                 model_.addConstr(GRBLinExpr(0.0) >= 1.0));
         }
-        if (kind_ == RootModelKind::kM) {
-            GRBLinExpr expression = *horizon_;
-            pattern_count_row_ = model_.addConstr(expression >= 0.0);
-        } else {
-            pattern_count_row_ = model_.addConstr(
-                GRBLinExpr(0.0) <= static_cast<double>(lower_bound));
-        }
+        GRBLinExpr expression = horizon_;
+        pattern_count_row_ = model_.addConstr(expression >= 0.0);
         model_.update();
-
-        if (kind_ == RootModelKind::kFixedK) {
-            artificial_variables_.reserve(
-                static_cast<std::size_t>(instance.size()));
-            for (GRBConstr& row : item_rows_) {
-                GRBColumn column;
-                column.addTerm(1.0, row);
-                artificial_variables_.push_back(model_.addVar(
-                    0.0, 1.0, objective_multiplier_, GRB_CONTINUOUS,
-                    column));
-            }
-        }
 
         const std::size_t expected =
             static_cast<std::size_t>(std::max(1024, instance.size() * 4));
@@ -217,8 +184,7 @@ public:
             column.addTerm(1.0,
                            item_rows_[static_cast<std::size_t>(item)]);
         }
-        column.addTerm(kind_ == RootModelKind::kM ? -1.0 : 1.0,
-                       pattern_count_row_);
+        column.addTerm(-1.0, pattern_count_row_);
         variables_.push_back(model_.addVar(
             0.0, GRB_INFINITY, 0.0, GRB_CONTINUOUS, column));
         patterns_.push_back(std::move(pattern));
@@ -226,15 +192,6 @@ public:
     }
 
     void update() { model_.update(); }
-
-    void set_fixed_k(int value) {
-        if (kind_ != RootModelKind::kFixedK) {
-            throw std::logic_error("set_fixed_k called on the M master");
-        }
-        pattern_count_row_.set(GRB_DoubleAttr_RHS,
-                               static_cast<double>(value));
-        model_.update();
-    }
 
     [[nodiscard]] bool solve(Clock::time_point end_time,
                              Statistics& statistics) {
@@ -267,18 +224,8 @@ public:
                 "Gurobi returned a non-finite pattern-count dual");
         }
         const double normalized = raw / objective_multiplier_;
-        result.pattern_count = kind_ == RootModelKind::kM
-                                   ? std::max(0.0, normalized)
-                                   : std::min(0.0, normalized);
+        result.pattern_count = std::max(0.0, normalized);
         return result;
-    }
-
-    [[nodiscard]] double artificial_value() const {
-        double total = 0.0;
-        for (const GRBVar& variable : artificial_variables_) {
-            total += variable.get(GRB_DoubleAttr_X);
-        }
-        return total;
     }
 
     [[nodiscard]] double objective_value() const noexcept {
@@ -306,12 +253,7 @@ public:
         }
         const double linked = std::max(1.0, static_cast<double>(required));
         objective_multiplier_ = linked;
-        if (horizon_.has_value()) {
-            horizon_->set(GRB_DoubleAttr_Obj, linked);
-        }
-        for (GRBVar& artificial : artificial_variables_) {
-            artificial.set(GRB_DoubleAttr_Obj, linked);
-        }
+        horizon_.set(GRB_DoubleAttr_Obj, linked);
         model_.update();
         return true;
     }
@@ -342,13 +284,11 @@ private:
                      Clock::now() >= end_time;
     }
 
-    RootModelKind kind_;
-    double objective_multiplier_ = kPaperObjectiveMultiplier;
+    double objective_multiplier_ = kMaximumObjectiveMultiplier;
     GRBModel model_;
-    std::optional<GRBVar> horizon_;
+    GRBVar horizon_;
     std::vector<GRBConstr> item_rows_;
     GRBConstr pattern_count_row_;
-    std::vector<GRBVar> artificial_variables_;
     std::vector<Pattern> patterns_;
     std::vector<GRBVar> variables_;
     std::unordered_set<std::string> pattern_keys_;
@@ -1382,14 +1322,9 @@ RootStatistics run_position_free_root_column_generation(
     const Instance& instance,
     const Assignment& incumbent,
     int lower_bound,
-    RootModelKind kind,
     const Config& config,
     Deadline& deadline,
     Statistics& statistics) {
-    if (kind != RootModelKind::kFixedK && kind != RootModelKind::kM) {
-        throw std::invalid_argument(
-            "position-free root CG supports only fixed-k and m");
-    }
     const auto start = Clock::now();
     const Statistics initial_statistics = statistics;
     RootStatistics partial;
@@ -1398,7 +1333,7 @@ RootStatistics run_position_free_root_column_generation(
     if (lower_bound >= incumbent.bin_count) {
         partial.completed = true;
         partial.lp_value = static_cast<double>(lower_bound);
-        PositionFreeMaster master(environment, instance, kind, lower_bound,
+        PositionFreeMaster master(environment, instance, lower_bound,
                                   incumbent.bin_count, config);
         master.add_initial_patterns(make_initial_patterns(instance, incumbent));
         ++statistics.cg_count;
@@ -1408,12 +1343,11 @@ RootStatistics run_position_free_root_column_generation(
                                     initial_statistics, start);
     }
 
-    PositionFreeMaster master(environment, instance, kind, lower_bound,
+    PositionFreeMaster master(environment, instance, lower_bound,
                               incumbent.bin_count, config);
     master.add_initial_patterns(make_initial_patterns(instance, incumbent));
     const ConflictGraph conflicts = build_conflict_graph(instance);
 
-    int fixed_k = lower_bound;
     for (int iteration = 0; iteration < config.max_cg_iterations; ++iteration) {
         if (deadline.expired()) {
             partial.timed_out = true;
@@ -1426,27 +1360,16 @@ RootStatistics run_position_free_root_column_generation(
             break;
         }
 
-        if (kind == RootModelKind::kFixedK &&
-            master.artificial_value() <= kPhaseOneTolerance) {
-            partial.completed = true;
-            partial.lp_value = static_cast<double>(fixed_k);
-            partial.certified_lower_bound = fixed_k;
-            break;
-        }
-
         const PositionFreeMaster::Duals duals = master.duals();
-        const double threshold = kind == RootModelKind::kM
-                                     ? duals.pattern_count
-                                     : -duals.pattern_count;
-        const bool fixed_model = kind == RootModelKind::kFixedK;
+        const double threshold = duals.pattern_count;
         const ScaledPositionFreeDuals certificate_scaled =
-            scale_position_free_duals(duals.item, threshold, fixed_model);
+            scale_position_free_duals(duals.item, threshold, false);
         if (master.link_objective_multiplier_to_scale(
                 certificate_scaled.scale)) {
             continue;
         }
         const ScaledPositionFreeDuals scaled = scale_position_free_duals(
-            duals.item, threshold, fixed_model,
+            duals.item, threshold, false,
             std::min(certificate_scaled.scale,
                      pricing_scale_limit(master.objective_multiplier())));
         const std::uint64_t scale =
@@ -1467,8 +1390,6 @@ RootStatistics run_position_free_root_column_generation(
             partial.certificate_scale_min =
                 std::min(partial.certificate_scale_min, certificate_scale);
         }
-        partial.certificate_scale_max =
-            std::max(partial.certificate_scale_max, certificate_scale);
         LongPricingResult priced = run_long_pricing(
             instance, conflicts, master.pattern_keys(), scaled.item,
             scaled.threshold, deadline.end_time(), statistics);
@@ -1489,37 +1410,16 @@ RootStatistics run_position_free_root_column_generation(
             break;
         }
 
-        if (kind == RootModelKind::kM) {
-            const std::int64_t denominator =
-                std::max(certificate_scaled.scale, exact.maximum_profit);
-            const int certified =
-                ceil_ratio(certificate_scaled.sum, denominator);
-            partial.certified_lower_bound = std::min(
-                incumbent.bin_count,
-                std::max(lower_bound, certified));
-            partial.lp_value = master.objective_value();
-            partial.completed = true;
-            break;
-        }
-
-        const bool phase_one_positive =
-            certificate_scaled.sum > 0 &&
-            (exact.maximum_profit == 0 ||
-             (fixed_k <= certificate_scaled.sum / exact.maximum_profit &&
-              static_cast<std::int64_t>(fixed_k) * exact.maximum_profit <
-                  certificate_scaled.sum));
-        if (!phase_one_positive) {
-            partial.numerical_failure = true;
-            break;
-        }
-        ++fixed_k;
-        partial.certified_lower_bound = fixed_k;
-        if (fixed_k >= incumbent.bin_count) {
-            partial.completed = true;
-            partial.lp_value = static_cast<double>(fixed_k);
-            break;
-        }
-        master.set_fixed_k(fixed_k);
+        const std::int64_t denominator =
+            std::max(certificate_scaled.scale, exact.maximum_profit);
+        const int certified =
+            ceil_ratio(certificate_scaled.sum, denominator);
+        partial.certified_lower_bound = std::min(
+            incumbent.bin_count,
+            std::max(lower_bound, certified));
+        partial.lp_value = master.objective_value();
+        partial.completed = true;
+        break;
     }
 
     if (!partial.completed && !partial.timed_out &&

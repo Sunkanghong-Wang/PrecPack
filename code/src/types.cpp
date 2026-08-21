@@ -166,62 +166,14 @@ const char* to_string(SolveStatus status) noexcept {
             return "NOT_SOLVED";
         case SolveStatus::kOptimal:
             return "OPTIMAL";
-        case SolveStatus::kFeasible:
-            return "FEASIBLE";
-        case SolveStatus::kInfeasible:
-            return "INFEASIBLE";
         case SolveStatus::kTimeLimit:
             return "TIME_LIMIT";
         case SolveStatus::kStateLimit:
             return "STATE_LIMIT";
         case SolveStatus::kMemoryLimit:
             return "MEMORY_LIMIT";
-        case SolveStatus::kError:
-            return "ERROR";
     }
     return "UNKNOWN";
-}
-
-const char* to_string(ExactMethod method) noexcept {
-    switch (method) {
-        case ExactMethod::kBbr:
-            return "bbr";
-        case ExactMethod::kBppc:
-            return "bppc";
-        case ExactMethod::kBpc:
-            return "bpc";
-        case ExactMethod::kMip:
-            return "mip";
-    }
-    return "unknown";
-}
-
-const char* to_string(RootModelKind model) noexcept {
-    switch (model) {
-        case RootModelKind::kDirectPrecedence:
-            return "direct";
-        case RootModelKind::kFixedK:
-            return "fixed-k";
-        case RootModelKind::kM:
-            return "m";
-    }
-    return "unknown";
-}
-
-const char* to_string(BbrRootCgMode mode) noexcept {
-    switch (mode) {
-        case BbrRootCgMode::kNone:
-            return "none";
-        case BbrRootCgMode::kDirectPrecedence:
-            return "direct";
-        case BbrRootCgMode::kFixedK:
-            return "fixed-k";
-        case BbrRootCgMode::kM:
-            return "m";
-        case BbrRootCgMode::kPriceAndSwitch:
-            return "price-and-switch";
-    }
-    return "unknown";
 }
 
 }

@@ -65,8 +65,6 @@ set(PRECPACK_CORE_SOURCES
     src/bbr.cpp
     src/bin_packing_bound.cpp
     src/cli.cpp
-    src/conflict_bin_packing.cpp
-    src/conflict_graph.cpp
     src/dff.cpp
     src/initial_bounds.cpp
     src/instance_io.cpp
@@ -78,9 +76,7 @@ set(PRECPACK_CORE_SOURCES
 
 if(PRECPACK_HAS_GUROBI)
     list(APPEND PRECPACK_CORE_SOURCES
-        src/branch_price.cpp
-        src/column_generation.cpp
-        src/gurobi_solver.cpp
+        src/bin_indexed_root_bound.cpp
         src/root_column_generation.cpp)
 endif()
 
@@ -204,6 +200,12 @@ include(CTest)
 if(BUILD_TESTING)
     set(PRECPACK_TEST_TARGETS "")
     add_executable(precpack_exactness_tests scripts/test_exactness.cpp)
+    if(PRECPACK_HAS_GUROBI)
+        target_sources(precpack_exactness_tests PRIVATE
+            scripts/gurobi_oracle.cpp)
+    endif()
+    target_include_directories(precpack_exactness_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(precpack_exactness_tests PRIVATE precpack_core)
     precpack_configure_target(precpack_exactness_tests)
     add_test(NAME precpack_exactness_tests COMMAND precpack_exactness_tests)

@@ -1,4 +1,4 @@
-#include "precpack/gurobi_solver.hpp"
+#include "gurobi_oracle.hpp"
 
 #include <gurobi_c++.h>
 
@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-namespace precpack {
+namespace precpack::test {
 
 MipResult solve_compact_mip(GRBEnv& environment,
                             const Instance& instance,
@@ -34,13 +34,13 @@ MipResult solve_compact_mip(GRBEnv& environment,
     result.has_incumbent = true;
     result.certified_lower_bound = lower_bound;
     if (lower_bound >= incumbent.bin_count) {
-        result.status = SolveStatus::kOptimal;
+        result.status = OracleStatus::kOptimal;
         result.optimal = true;
         result.best_bound = static_cast<double>(lower_bound);
         return result;
     }
     if (deadline.expired()) {
-        result.status = SolveStatus::kTimeLimit;
+        result.status = OracleStatus::kTimeLimit;
         result.best_bound = static_cast<double>(lower_bound);
         return result;
     }
@@ -50,7 +50,7 @@ MipResult solve_compact_mip(GRBEnv& environment,
     GRBModel model(environment);
     model.set(GRB_IntParam_Threads, 1);
     model.set(GRB_IntParam_Seed, static_cast<int>(config.seed));
-    model.set(GRB_IntParam_OutputFlag, config.gurobi_log ? 1 : 0);
+    model.set(GRB_IntParam_OutputFlag, 0);
     model.set(GRB_DoubleParam_MIPGap, 0.0);
     model.set(GRB_DoubleParam_MIPGapAbs, 0.0);
     model.set(GRB_DoubleParam_FeasibilityTol, 1e-9);
@@ -152,7 +152,7 @@ MipResult solve_compact_mip(GRBEnv& environment,
     }
 
     if (deadline.expired()) {
-        result.status = SolveStatus::kTimeLimit;
+        result.status = OracleStatus::kTimeLimit;
         result.best_bound = static_cast<double>(lower_bound);
         return result;
     }
@@ -210,21 +210,21 @@ MipResult solve_compact_mip(GRBEnv& environment,
     }
 
     if (status == GRB_OPTIMAL) {
-        result.status = SolveStatus::kOptimal;
+        result.status = OracleStatus::kOptimal;
         result.optimal = true;
         result.certified_lower_bound = result.assignment.bin_count;
         result.best_bound = static_cast<double>(result.assignment.bin_count);
     } else if (status == GRB_TIME_LIMIT || status == GRB_INTERRUPTED ||
                gurobi_compat::is_work_limit_status(status) ||
                status == GRB_NODE_LIMIT) {
-        result.status = SolveStatus::kTimeLimit;
+        result.status = OracleStatus::kTimeLimit;
     } else if (status == GRB_INFEASIBLE) {
-        result.status = SolveStatus::kError;
+        result.status = OracleStatus::kError;
         throw std::logic_error("compact MIP rejected a validated incumbent");
     } else if (result.has_incumbent) {
-        result.status = SolveStatus::kFeasible;
+        result.status = OracleStatus::kFeasible;
     } else {
-        result.status = SolveStatus::kError;
+        result.status = OracleStatus::kError;
     }
     return result;
 }
