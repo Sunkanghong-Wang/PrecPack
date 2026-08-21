@@ -2,6 +2,7 @@
 
 set -euo pipefail
 
+caller_directory="$(pwd -P)"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repository_root="$(cd -- "${script_dir}/../.." && pwd -P)"
 binary="${repository_root}/build/precpack"
@@ -27,4 +28,5 @@ if [[ -n "${GUROBI_HOME:-}" ]]; then
 fi
 
 export PRECPACK_REPOSITORY_ROOT="$repository_root"
+export PRECPACK_CALLER_DIRECTORY="$caller_directory"
 exec "$binary" --batch "$@"

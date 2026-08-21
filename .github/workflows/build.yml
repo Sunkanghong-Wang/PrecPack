@@ -32,6 +32,7 @@ jobs:
           mkdir -p "build/relative launcher"
           cp data/instances/otto/n_0020/instance_n=20_1.txt \
             "build/relative launcher/local-instance.txt"
+          test -f "build/relative launcher/local-instance.txt"
           (
             cd "build/relative launcher"
             ../../code/scripts/run_batch.sh \
@@ -53,7 +54,10 @@ jobs:
           if errorlevel 1 exit /b 1
           mkdir "build\relative launcher"
           copy /Y data\instances\otto\n_0020\instance_n=20_1.txt "build\relative launcher\local-instance.txt" >nul
+          if not exist "build\relative launcher\local-instance.txt" exit /b 1
           pushd "build\relative launcher"
+          if errorlevel 1 exit /b 1
+          if not exist local-instance.txt exit /b 1
           call ..\..\code\scripts\run_batch.bat --problem bpp-p --input local-instance.txt --time-limit 10 --output-dir "relative output"
           if errorlevel 1 exit /b 1
           popd

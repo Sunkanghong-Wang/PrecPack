@@ -129,6 +129,13 @@ CommandLineOptions parse_command_line(int argc, char* const argv[]) {
         if (!options.instance_path.empty() || options.graph_path.has_value()) {
             usage_error("--instance and --graph are not valid with --batch");
         }
+        if (options.input_path.has_value() && options.input_path->empty()) {
+            usage_error("--input cannot be empty");
+        }
+        if (options.graph_directory.has_value() &&
+            options.graph_directory->empty()) {
+            usage_error("--graph-dir cannot be empty");
+        }
         if (options.problem != ProblemKind::kBppGp &&
             options.graph_directory.has_value()) {
             usage_error("--graph-dir is only valid for bpp-gp");
@@ -151,6 +158,9 @@ CommandLineOptions parse_command_line(int argc, char* const argv[]) {
         if (options.problem == ProblemKind::kBppGp &&
             !options.graph_path.has_value()) {
             usage_error("--graph is required for bpp-gp");
+        }
+        if (options.graph_path.has_value() && options.graph_path->empty()) {
+            usage_error("--graph cannot be empty");
         }
         if (options.problem != ProblemKind::kBppGp &&
             options.graph_path.has_value()) {

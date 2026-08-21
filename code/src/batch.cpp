@@ -57,6 +57,32 @@ constexpr std::array<const char*, 7> kOttoBaseDirectories = {
     return std::filesystem::absolute(value).lexically_normal();
 }
 
+[[nodiscard]] std::filesystem::path caller_directory() {
+    const char* value = std::getenv("PRECPACK_CALLER_DIRECTORY");
+    if (value == nullptr || *value == '\0') {
+        return std::filesystem::current_path();
+    }
+    return std::filesystem::absolute(value).lexically_normal();
+}
+
+[[nodiscard]] std::filesystem::path resolve_from(
+    const std::filesystem::path& path,
+    const std::filesystem::path& base) {
+    if (path.is_absolute()) {
+        return path.lexically_normal();
+    }
+    return (base / path).lexically_normal();
+}
+
+[[nodiscard]] std::optional<std::filesystem::path> resolve_from(
+    const std::optional<std::filesystem::path>& path,
+    const std::filesystem::path& base) {
+    if (!path.has_value()) {
+        return std::nullopt;
+    }
+    return resolve_from(*path, base);
+}
+
 [[nodiscard]] std::string lowercase(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](char value) {
         return static_cast<char>(
@@ -264,8 +290,13 @@ std::vector<BatchCase> collect_batch_cases(
 
 int run_batch(const CommandLineOptions& options) {
     const std::filesystem::path root = repository_root();
+    const std::filesystem::path caller = caller_directory();
+    const std::optional<std::filesystem::path> input_path =
+        resolve_from(options.input_path, caller);
+    const std::optional<std::filesystem::path> graph_directory =
+        resolve_from(options.graph_directory, caller);
     std::vector<BatchCase> cases = collect_batch_cases(
-        options.problem, options.input_path, options.graph_directory,
+        options.problem, input_path, graph_directory,
         root / "data/instances", root / "data/bpp-gp-graphs");
     if (cases.empty()) {
         throw std::invalid_argument("no instances selected");
@@ -276,7 +307,7 @@ int run_batch(const CommandLineOptions& options) {
         verify_gurobi_runtime();
     }
     const std::filesystem::path output_directory =
-        std::filesystem::absolute(options.output_directory).lexically_normal();
+        resolve_from(options.output_directory, caller);
     std::unique_ptr<OutputLock> output_lock;
     if (!options.check_only || std::filesystem::exists(output_directory)) {
         output_lock = std::make_unique<OutputLock>(output_directory);

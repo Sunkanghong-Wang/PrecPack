@@ -262,6 +262,16 @@ void test_public_validation() {
     }
     require(rejected_mixed_inputs,
             "batch mode accepted the single-instance interface");
+
+    bool rejected_empty_batch_input = false;
+    try {
+        static_cast<void>(parse(
+            {"precpack", "--batch", "--problem", "bpp-p", "--input", ""}));
+    } catch (const std::invalid_argument&) {
+        rejected_empty_batch_input = true;
+    }
+    require(rejected_empty_batch_input,
+            "batch mode accepted an empty input path");
 }
 
 void test_batch_pairing() {
@@ -414,6 +424,29 @@ void test_batch_resume_profile() {
     }
     require(rejected_gurobi_profile,
             "batch resume mixed strict and optional Gurobi profiles");
+}
+
+void test_batch_caller_directory() {
+    TemporaryDirectory temporary_directory;
+    const std::filesystem::path caller =
+        temporary_directory.path() / "caller directory";
+    std::filesystem::create_directories(caller);
+    write_text_file(caller / "local-instance.txt", "instance");
+
+    precpack::CommandLineOptions options;
+    options.batch_mode = true;
+    options.check_only = true;
+    options.problem = precpack::ProblemKind::kBppP;
+    options.input_path = "local-instance.txt";
+    options.output_directory = "relative output";
+
+    const std::string caller_string = caller.string();
+    ScopedEnvironment caller_environment(
+        "PRECPACK_CALLER_DIRECTORY", caller_string.c_str());
+    require(precpack::run_batch(options) == 0,
+            "batch paths were not resolved from the launcher caller");
+    require(!std::filesystem::exists(caller / "relative output"),
+            "check-only batch unexpectedly created its output directory");
 }
 
 void test_instance_file_validation() {
@@ -683,6 +716,7 @@ int main() {
         test_public_validation();
         test_batch_pairing();
         test_batch_resume_profile();
+        test_batch_caller_directory();
         test_instance_file_validation();
         test_bpp_profile();
         test_parallel_profile();
