@@ -7,6 +7,8 @@
 #include "precpack/solver.hpp"
 #include "precpack/solver_profile.hpp"
 
+#include "environment.hpp"
+
 #if PRECPACK_HAS_GUROBI
 #include <gurobi_c++.h>
 #endif
@@ -16,7 +18,6 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -43,11 +44,12 @@ constexpr std::array<const char*, 7> kOttoBaseDirectories = {
 };
 
 [[nodiscard]] bool require_gurobi_runtime() {
-    const char* value = std::getenv("PRECPACK_REQUIRE_GUROBI_RUNTIME");
-    if (value == nullptr || *value == '\0' || std::string_view(value) == "0") {
+    const std::optional<std::string> value =
+        internal::environment_value("PRECPACK_REQUIRE_GUROBI_RUNTIME");
+    if (!value.has_value() || *value == "0") {
         return false;
     }
-    if (std::string_view(value) != "1") {
+    if (*value != "1") {
         throw std::invalid_argument(
             "PRECPACK_REQUIRE_GUROBI_RUNTIME must be 0 or 1");
     }
@@ -55,19 +57,21 @@ constexpr std::array<const char*, 7> kOttoBaseDirectories = {
 }
 
 [[nodiscard]] std::filesystem::path repository_root() {
-    const char* value = std::getenv("PRECPACK_REPOSITORY_ROOT");
-    if (value == nullptr || *value == '\0') {
+    const std::optional<std::string> value =
+        internal::environment_value("PRECPACK_REPOSITORY_ROOT");
+    if (!value.has_value()) {
         return std::filesystem::current_path();
     }
-    return std::filesystem::absolute(value).lexically_normal();
+    return std::filesystem::absolute(*value).lexically_normal();
 }
 
 [[nodiscard]] std::filesystem::path caller_directory() {
-    const char* value = std::getenv("PRECPACK_CALLER_DIRECTORY");
-    if (value == nullptr || *value == '\0') {
+    const std::optional<std::string> value =
+        internal::environment_value("PRECPACK_CALLER_DIRECTORY");
+    if (!value.has_value()) {
         return std::filesystem::current_path();
     }
-    return std::filesystem::absolute(value).lexically_normal();
+    return std::filesystem::absolute(*value).lexically_normal();
 }
 
 [[nodiscard]] std::filesystem::path resolve_from(
@@ -89,9 +93,9 @@ constexpr std::array<const char*, 7> kOttoBaseDirectories = {
 }
 
 [[nodiscard]] std::string lowercase(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](char value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](char character) {
         return static_cast<char>(
-            std::tolower(static_cast<unsigned char>(value)));
+            std::tolower(static_cast<unsigned char>(character)));
     });
     return value;
 }

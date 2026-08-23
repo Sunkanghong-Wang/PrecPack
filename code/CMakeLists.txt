@@ -212,6 +212,8 @@ if(BUILD_TESTING)
     list(APPEND PRECPACK_TEST_TARGETS precpack_exactness_tests)
 
     add_executable(precpack_interface_tests scripts/test_public_interface.cpp)
+    target_include_directories(precpack_interface_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(precpack_interface_tests PRIVATE precpack_core)
     precpack_configure_target(precpack_interface_tests)
 

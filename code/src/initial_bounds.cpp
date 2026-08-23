@@ -13,6 +13,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <tuple>

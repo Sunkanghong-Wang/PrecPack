@@ -2,8 +2,9 @@
 
 #include "precpack/build_config.hpp"
 
+#include "environment.hpp"
+
 #include <cmath>
-#include <cstdlib>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
@@ -115,10 +116,11 @@ void replace_file(const std::filesystem::path& source,
 
     std::error_code error;
     std::filesystem::path current;
-    const char* repository = std::getenv("PRECPACK_REPOSITORY_ROOT");
-    if (repository != nullptr && *repository != '\0') {
+    const std::optional<std::string> repository =
+        internal::environment_value("PRECPACK_REPOSITORY_ROOT");
+    if (repository.has_value()) {
         current =
-            std::filesystem::absolute(repository, error).lexically_normal();
+            std::filesystem::absolute(*repository, error).lexically_normal();
     } else {
         current = std::filesystem::current_path(error).lexically_normal();
     }

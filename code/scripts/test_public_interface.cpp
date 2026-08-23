@@ -8,6 +8,8 @@
 #include "precpack/result_io.hpp"
 #include "precpack/solver_profile.hpp"
 
+#include "environment.hpp"
+
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -76,9 +78,10 @@ private:
 class ScopedEnvironment {
 public:
     ScopedEnvironment(const char* name, const char* value) : name_(name) {
-        const char* previous = std::getenv(name);
-        if (previous != nullptr) {
-            previous_ = previous;
+        const std::optional<std::string> previous =
+            precpack::internal::environment_value(name);
+        if (previous.has_value()) {
+            previous_ = *previous;
         }
 #ifdef _WIN32
         require(_putenv_s(name, value) == 0,

@@ -1153,24 +1153,25 @@ struct StateStore {
 
 private:
     struct Chunk {
-        Chunk(std::size_t capacity,
+        Chunk(std::size_t chunk_capacity,
               std::size_t key_word_count,
               std::size_t transform_count)
-            : capacity(capacity),
-              keys(new std::uint64_t[capacity * key_word_count]),
-              hashes(new std::uint64_t[capacity]),
-              assigned_hashes(new std::uint64_t[capacity]),
-              parents(new std::uint32_t[capacity]),
-              depths(new int[capacity]),
-              bounds(new int[capacity]),
-              versions(new std::uint32_t[capacity]),
-              queued(new unsigned char[capacity]),
-              assigned_weights(new std::int64_t[capacity]),
-              assigned_counts(new int[capacity]),
+            : capacity(chunk_capacity),
+              keys(new std::uint64_t[chunk_capacity * key_word_count]),
+              hashes(new std::uint64_t[chunk_capacity]),
+              assigned_hashes(new std::uint64_t[chunk_capacity]),
+              parents(new std::uint32_t[chunk_capacity]),
+              depths(new int[chunk_capacity]),
+              bounds(new int[chunk_capacity]),
+              versions(new std::uint32_t[chunk_capacity]),
+              queued(new unsigned char[chunk_capacity]),
+              assigned_weights(new std::int64_t[chunk_capacity]),
+              assigned_counts(new int[chunk_capacity]),
               dff_sums(transform_count == 0U
                            ? nullptr
-                           : new std::int64_t[capacity * transform_count]),
-              profile_next(new std::uint32_t[capacity]) {}
+                           : new std::int64_t[
+                                 chunk_capacity * transform_count]),
+              profile_next(new std::uint32_t[chunk_capacity]) {}
 
         std::size_t capacity = 0U;
         std::unique_ptr<std::uint64_t[]> keys;
