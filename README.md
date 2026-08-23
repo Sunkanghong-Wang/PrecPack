@@ -241,7 +241,7 @@ The same executable provides a sequential, resume-safe batch mode used by the su
 | `--graph-dir` | BPP-GP `.graph` file or directory | both included labeled-graph sets |
 | `--check-only` | Validate the selection and compatible existing output without solving | off |
 
-The deterministic seed is fixed to 1, and the production remembered-state cap is fixed to 60,000,000. In parallel runs this is one global cap, not 60,000,000 states per worker. `--threads -1` uses `std::thread::hardware_concurrency()` and falls back to one worker if the platform cannot report it. A time-, state-, or memory-limited run still writes its validated incumbent and certified lower bound; only `status=OPTIMAL` certifies optimality. Every run appends its metadata and summary statistics to `SALBP-I_Results.csv`, `BPP-P_Results.csv`, or `BPP-GP_Results.csv`, according to the selected problem. The corresponding `.sol` file below `solutions/` contains only the bin assignment, avoiding duplicated data in large benchmark sets.
+The deterministic seed is fixed to 1. `--threads -1` uses `std::thread::hardware_concurrency()` and falls back to one worker if the platform cannot report it. A time- or memory-limited run still writes its validated incumbent and certified lower bound; only `status=OPTIMAL` certifies optimality. Every run appends its metadata and summary statistics to `SALBP-I_Results.csv`, `BPP-P_Results.csv`, or `BPP-GP_Results.csv`, according to the selected problem. The corresponding `.sol` file below `solutions/` contains only the bin assignment, avoiding duplicated data in large benchmark sets.
 
 Every writable batch also appends a flushed event stream to `logs/batch-events.log`. A `START` record is persisted before each solve, followed by `SUCCESS` or `ERROR`; an unmatched final `START` therefore identifies the active instance if the process is killed or crashes before C++ can report an exception. A caught solver, input, Gurobi, or output exception is additionally appended to `logs/<problem>__<instance_key>.failure.log` with the complete resource profile and message. If a later resume solves that instance, the same file retains the failure history and receives a `RECOVERED` record.
 
@@ -264,7 +264,6 @@ Each problem-specific results CSV contains one row per run with the following fi
 | `time_seconds` | Total wall-clock solution time in seconds |
 | `time_limit_seconds` | Configured global wall-clock limit in seconds |
 | `threads` | Resolved number of exact BBR workers |
-| `state_limit` | Configured global remembered-state limit |
 | `memory_limit_mb` | Configured global BBR memory limit in MiB |
 | `bbr_peak_memory_bytes` | Peak memory tracked by BBR, not whole-process resident memory |
 | `gurobi_enabled` | `1` if the executable was built with optional Gurobi support, otherwise `0` |
@@ -275,16 +274,15 @@ CSV fields containing commas, quotes, or line breaks use standard double-quote e
 
 Each output directory contains a zero-byte `.precpack.lock` coordination file. PrecPack uses an operating-system file lock on it to serialize writers; the lock is released automatically when the process exits, including after an abnormal termination. The file may remain in place and is not solver output.
 
-The fixed public BBR interface reports four termination statuses:
+The fixed public BBR interface reports three result statuses:
 
 | Status | Meaning |
 | --- | --- |
 | `OPTIMAL` | The exact proof is complete and the certified lower bound equals the saved upper bound. |
 | `TIME_LIMIT` | The global wall-clock limit was reached before the proof completed. |
-| `STATE_LIMIT` | The global remembered-state limit was reached before the proof completed. |
 | `MEMORY_LIMIT` | The global BBR accounted-memory limit was reached before the proof completed. |
 
-All three limited statuses retain a validated feasible assignment and a certified lower bound. They do not certify optimality.
+Both limited statuses retain a validated feasible assignment and a certified lower bound. They do not certify optimality.
 
 Each `.sol` file contains one line for every bin or station position from 1 through the saved upper bound. Generalized separations may require an unused intermediate position, which is written as an empty line after the colon:
 
@@ -356,7 +354,7 @@ Omitting `--input` selects the complete benchmark set for the requested problem.
 
 #### Parallel Experiments
 
-`run_parallel.sh` and `run_parallel.bat` run the multithreaded configurations for the controlled experiment reported in the paper's “Parallel Scalability” table. They use the complete 100-item Otto benchmark sets for SALBP-I, BPP-P, and both BPP-GP labeled-graph sets. Each 525-instance set is run sequentially with 2, 4, and 8 solver threads, for 12 configurations and 6,300 runs. The corresponding single-thread results are produced by the problem-level batch runs and are not repeated here. The limits are 350 seconds for SALBP-I, 1,000 seconds for BPP-P, and 75 seconds for each BPP-GP graph set; every configuration uses 24,576 MiB of globally accounted BBR memory and the fixed 60,000,000-state cap.
+`run_parallel.sh` and `run_parallel.bat` run the multithreaded configurations for the controlled experiment reported in the paper's “Parallel Scalability” table. They use the complete 100-item Otto benchmark sets for SALBP-I, BPP-P, and both BPP-GP labeled-graph sets. Each 525-instance set is run sequentially with 2, 4, and 8 solver threads, for 12 configurations and 6,300 runs. The corresponding single-thread results are produced by the problem-level batch runs and are not repeated here. The limits are 350 seconds for SALBP-I, 1,000 seconds for BPP-P, and 75 seconds for each BPP-GP graph set; every configuration uses 24,576 MiB of globally accounted BBR memory.
 
 The experiment uses one frozen Gurobi-enabled Release executable so that the BPP-P and BPP-GP configurations retain the reported `price-and-switch` root policy. It therefore requires an accessible Gurobi license, although the general PrecPack solver remains exact without Gurobi. The experiment launcher enables a strict runtime profile: it verifies the license before solving, aborts on any later Gurobi failure instead of falling back, and records `gurobi_required=1`. Build once and do not rebuild while a batch is being resumed.
 

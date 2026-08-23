@@ -197,8 +197,6 @@ const char* to_string(SolveStatus status) noexcept {
             return "OPTIMAL";
         case SolveStatus::kTimeLimit:
             return "TIME_LIMIT";
-        case SolveStatus::kStateLimit:
-            return "STATE_LIMIT";
         case SolveStatus::kMemoryLimit:
             return "MEMORY_LIMIT";
     }

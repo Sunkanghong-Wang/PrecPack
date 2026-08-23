@@ -66,7 +66,6 @@ Config make_solver_config(ProblemKind problem,
     config.seed = 1;
     config.threads = threads;
     config.bbr_memory_limit_mb = memory_limit_mb;
-    config.bbr_state_limit = 60'000'000ULL;
     config.bbr_enable_early_exact_probe = true;
     config.bbr_enable_jackson = true;
     config.bbr_enable_no_successor = true;

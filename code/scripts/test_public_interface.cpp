@@ -386,7 +386,6 @@ void test_batch_resume_profile() {
     solution.upper_bound = 1;
     solution.threads = 1;
     solution.bbr_stats.time_limit_seconds = 60.0;
-    solution.bbr_stats.configured_state_limit = 60'000'000ULL;
     solution.bbr_stats.memory_limit_bytes = 512ULL * 1024ULL * 1024ULL;
     precpack::append_result_csv(
         output_directory / "BPP-P_Results.csv", key, canonical_instance,
@@ -623,7 +622,7 @@ void test_instance_file_validation() {
 void test_bpp_profile() {
     const precpack::Config config = precpack::make_solver_config(
         precpack::ProblemKind::kBppGp, 17.0, 512);
-    require(config.seed == 1 && config.bbr_state_limit == 60'000'000ULL,
+    require(config.seed == 1,
             "fixed reproducibility controls changed");
     require(config.threads == 1, "serial profile default changed");
     require(config.time_limit_seconds == 17.0 &&
@@ -715,7 +714,6 @@ void test_output_schema() {
     solution.stats.total_seconds = 1.25;
     solution.threads = 4;
     solution.bbr_stats.time_limit_seconds = 60.0;
-    solution.bbr_stats.configured_state_limit = 60'000'000ULL;
     solution.bbr_stats.memory_limit_bytes = 512ULL * 1024ULL * 1024ULL;
     solution.bbr_stats.peak_memory_bytes = 123'456ULL;
     solution.assignment.bin_of_item = {0, 0, 1};
@@ -733,10 +731,10 @@ void test_output_schema() {
     const std::string expected_csv =
         "instance_key,problem,instance_file,graph_file,n,capacity,status,"
         "lower_bound,upper_bound,gap,time_seconds,time_limit_seconds,threads,"
-        "state_limit,memory_limit_mb,bbr_peak_memory_bytes,gurobi_enabled,"
+        "memory_limit_mb,bbr_peak_memory_bytes,gurobi_enabled,"
         "gurobi_required,solution_file\n"
         "\"case,1\",BPP-P,\"data/case,1.txt\",,3,10,OPTIMAL,2,2,0,1.25,"
-        "60,4,60000000,512,123456," +
+        "60,4,512,123456," +
         std::string(precpack::kHasGurobiSupport ? "1" : "0") +
         ",1,solutions/case.sol\n";
     require(read_text_file(csv_path) == expected_csv,
@@ -749,7 +747,6 @@ void test_output_schema() {
                 std::abs(references.front().time_limit_seconds - 60.0) <
                     1e-12 &&
                 references.front().threads == 4 &&
-                references.front().state_limit == 60'000'000ULL &&
                 references.front().memory_limit_mb == 512U &&
                 references.front().gurobi_enabled ==
                     precpack::kHasGurobiSupport &&
@@ -760,8 +757,7 @@ void test_output_schema() {
     const std::filesystem::path malformed_result_path =
         temporary_directory.path() / "malformed-result.csv";
     std::string malformed_result = expected_csv;
-    const std::size_t time_field =
-        malformed_result.find(",60,4,60000000,512,");
+    const std::size_t time_field = malformed_result.find(",60,4,512,");
     require(time_field != std::string::npos,
             "test result row no longer contains the expected profile fields");
     malformed_result.replace(time_field, 4U, ",,");

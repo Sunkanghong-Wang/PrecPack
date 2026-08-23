@@ -64,7 +64,6 @@ enum class SolveStatus {
     kNotSolved,
     kOptimal,
     kTimeLimit,
-    kStateLimit,
     kMemoryLimit,
 };
 
@@ -119,7 +118,6 @@ struct RootStatistics {
 struct BbrStatistics {
     bool attempted = false;
     bool timed_out = false;
-    bool state_limited = false;
     bool memory_limited = false;
     bool parallel = false;
     bool shared_memory_saturated = false;
@@ -200,8 +198,6 @@ struct BbrStatistics {
     std::uint64_t parallel_initial_work_max = 0;
 
     std::uint64_t peak_memory_bytes = 0;
-    std::uint64_t state_limit = 0;
-    std::uint64_t configured_state_limit = 0;
     std::uint64_t memory_limit_bytes = 0;
     bool initial_bdp_enabled = true;
     int seed = 1;
@@ -242,8 +238,7 @@ struct Config {
     // -1 uses available hardware concurrency; 1 preserves serial BBR.
     int threads = 1;
     bool require_gurobi_runtime = false;
-    // State and memory limits are global across all BBR workers.
-    std::uint64_t bbr_state_limit = 60'000'000ULL;
+    // The memory limit is global across all BBR workers.
     std::uint64_t bbr_memory_limit_mb = 24ULL * 1024ULL;
     bool bbr_enable_early_exact_probe = true;
     bool bbr_enable_initial_bdp = true;

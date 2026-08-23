@@ -246,8 +246,6 @@ Solution solve(const Instance& instance, const Config& requested_config) {
             std::min(3.0, 0.1 * config.time_limit_seconds);
     }
     constexpr std::uint64_t kMegabyte = 1024U * 1024U;
-    solution.bbr_stats.configured_state_limit = config.bbr_state_limit;
-    solution.bbr_stats.state_limit = config.bbr_state_limit;
     solution.bbr_stats.memory_limit_bytes =
         config.bbr_memory_limit_mb * kMegabyte;
     solution.bbr_stats.initial_bdp_enabled =
@@ -459,12 +457,13 @@ Solution solve(const Instance& instance, const Config& requested_config) {
             solution.stats.infeasible_nodes += bbr.statistics.bound_prunes;
             if (bbr.optimal) {
                 solution.status = SolveStatus::kOptimal;
-            } else if (bbr.state_limited) {
-                solution.status = SolveStatus::kStateLimit;
             } else if (bbr.memory_limited) {
                 solution.status = SolveStatus::kMemoryLimit;
-            } else {
+            } else if (bbr.timed_out || deadline.expired()) {
                 solution.status = SolveStatus::kTimeLimit;
+            } else {
+                throw std::logic_error(
+                    "exact BBR terminated without a resource limit");
             }
         }
     }

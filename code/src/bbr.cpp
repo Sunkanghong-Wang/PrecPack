@@ -35,6 +35,7 @@ using Clock = std::chrono::steady_clock;
 
 constexpr std::uint32_t kInvalidState =
     std::numeric_limits<std::uint32_t>::max();
+constexpr std::uint64_t kMaximumStateCount = kInvalidState;
 
 [[nodiscard]] int ceil_div_i64(std::int64_t numerator,
                                std::int64_t denominator,
@@ -1228,18 +1229,18 @@ public:
     StateStore(const StateStore&) = delete;
     StateStore& operator=(const StateStore&) = delete;
 
-    [[nodiscard]] bool prepare_append(std::uint64_t maximum_states,
-                                      std::uint64_t other_memory_bytes,
+    [[nodiscard]] bool prepare_append(std::uint64_t other_memory_bytes,
                                       std::uint64_t memory_limit) {
         const std::size_t required = size() + 1U;
         if (required <= capacity_states_) {
             return saturated_add(other_memory_bytes, memory_bytes()) <=
                    memory_limit;
         }
-        if (required > maximum_states) {
+        if (required > kMaximumStateCount) {
             return false;
         }
-        const std::uint64_t remaining = maximum_states - capacity_states_;
+        const std::uint64_t remaining =
+            kMaximumStateCount - capacity_states_;
         const std::size_t chunk_capacity = static_cast<std::size_t>(
             std::min<std::uint64_t>(kChunkStates, remaining));
         if (chunk_capacity == 0U) {
@@ -2083,39 +2084,21 @@ private:
 enum class ParallelStopReason : int {
     kNone = 0,
     kTimeLimit = 1,
-    kStateLimit = 2,
-    kMemoryLimit = 3,
+    kMemoryLimit = 2,
 };
 
 class ParallelControl {
 public:
-    ParallelControl(std::uint64_t state_limit,
-                    Assignment initial_incumbent,
+    ParallelControl(Assignment initial_incumbent,
                     SharedStateMemory& state_memory,
                     std::uint64_t worker_memory_limit,
                     int worker_count)
-        : state_limit_(state_limit),
-          incumbent_bound_(initial_incumbent.bin_count),
+        : incumbent_bound_(initial_incumbent.bin_count),
           incumbent_(std::move(initial_incumbent)),
           state_memory_(state_memory),
           worker_memory_limit_(worker_memory_limit),
           initial_worker_lease_(worker_memory_limit /
               static_cast<std::uint64_t>(std::max(1, worker_count))) {}
-
-    [[nodiscard]] bool acquire_state() noexcept {
-        std::uint64_t current = states_.load(std::memory_order_relaxed);
-        while (true) {
-            if (current >= state_limit_) {
-                stop(ParallelStopReason::kStateLimit);
-                return false;
-            }
-            if (states_.compare_exchange_weak(
-                    current, current + 1U, std::memory_order_relaxed,
-                    std::memory_order_relaxed)) {
-                return true;
-            }
-        }
-    }
 
     [[nodiscard]] SharedRememberResult remember(
         const std::uint64_t* key,
@@ -2165,8 +2148,12 @@ public:
             stop_reason_.load(std::memory_order_acquire));
     }
 
-    [[nodiscard]] std::uint64_t states() const noexcept {
-        return states_.load(std::memory_order_relaxed);
+    void note_state_created() noexcept {
+        states_created_.fetch_add(1U, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] std::uint64_t states_created() const noexcept {
+        return states_created_.load(std::memory_order_relaxed);
     }
 
     [[nodiscard]] bool shared_memory_saturated() const noexcept {
@@ -2227,8 +2214,7 @@ public:
     }
 
 private:
-    std::uint64_t state_limit_ = 0;
-    std::atomic<std::uint64_t> states_{0U};
+    std::atomic<std::uint64_t> states_created_{0U};
     std::atomic<int> incumbent_bound_{0};
     mutable std::mutex incumbent_mutex_;
     Assignment incumbent_;
@@ -2391,20 +2377,6 @@ public:
                 throw std::invalid_argument("invalid parallel BBR seed task");
             }
         }
-        const std::uint64_t estimated_per_state =
-            static_cast<std::uint64_t>(precomputed_.key_words) *
-                sizeof(std::uint64_t) +
-            static_cast<std::uint64_t>(precomputed_.dff_capacity.size()) *
-                sizeof(std::int64_t) +
-            96U;
-        const std::uint64_t memory_state_limit =
-            std::max<std::uint64_t>(1U,
-                maximum_memory_limit_bytes_ /
-                    std::max<std::uint64_t>(1U, estimated_per_state));
-        maximum_states_ = std::min(config_.bbr_state_limit, memory_state_limit);
-        if (maximum_states_ == 0U) {
-            throw std::invalid_argument("BBR state or memory limit is zero");
-        }
         statistics_.attempted = true;
         statistics_.parallel = parallel_control_ != nullptr;
         statistics_.requested_threads = config_.threads;
@@ -2454,8 +2426,6 @@ public:
             }
         }
         statistics_.reverse_direction = prepared_.reversed;
-        statistics_.state_limit = maximum_states_;
-        statistics_.configured_state_limit = config_.bbr_state_limit;
         statistics_.memory_limit_bytes = maximum_memory_limit_bytes_;
         statistics_.seed = config_.seed;
         statistics_.time_limit_seconds = config_.time_limit_seconds;
@@ -2680,10 +2650,12 @@ public:
                     const bool generalized_precedence =
                         !precomputed_.salbp_semantics &&
                         !precomputed_.bppp_semantics;
-                    constexpr std::uint64_t kStartupStateBudget = 65536U;
+                    constexpr std::uint64_t
+                        kStartupDiversificationThreshold = 65536U;
                     const bool startup_diversification =
                         parallel_control_ != nullptr &&
-                        parallel_control_->states() < kStartupStateBudget;
+                        parallel_control_->states_created() <
+                            kStartupDiversificationThreshold;
                     const std::uint64_t minimum_states_per_export =
                         startup_diversification ? 1024U : 4096U;
                     const std::uint64_t minimum_load_nodes_per_export =
@@ -2761,7 +2733,6 @@ private:
         result.optimal = !frontier_exported &&
             (optimal_ || upper_bound_ <= initial_lower_bound_);
         result.timed_out = timed_out_;
-        result.state_limited = state_limited_;
         result.memory_limited = memory_limited_;
         result.incumbent = incumbent_;
         result.certified_lower_bound = result.optimal
@@ -2771,7 +2742,6 @@ private:
                                                 upper_bound_);
 
         statistics_.timed_out = result.timed_out;
-        statistics_.state_limited = result.state_limited;
         statistics_.memory_limited = result.memory_limited;
         statistics_.peak_memory_bytes =
             std::max(statistics_.peak_memory_bytes, current_memory_bytes());
@@ -2801,10 +2771,6 @@ private:
                 timed_out_ = true;
                 stop_ = true;
                 break;
-            case ParallelStopReason::kStateLimit:
-                state_limited_ = true;
-                stop_ = true;
-                break;
             case ParallelStopReason::kMemoryLimit:
                 memory_limited_ = true;
                 stop_ = true;
@@ -2813,22 +2779,12 @@ private:
     }
 
     [[nodiscard]] bool acquire_state_slot(bool already_counted = false) {
-        if (store_.size() >= maximum_states_) {
-            if (maximum_states_ >= config_.bbr_state_limit) {
-                state_limited_ = true;
-                signal_parallel_stop(ParallelStopReason::kStateLimit);
-            } else {
-                memory_limited_ = true;
-                signal_parallel_stop(ParallelStopReason::kMemoryLimit);
-            }
-            stop_ = true;
-            return false;
+        if (store_.size() >= kMaximumStateCount) {
+            throw std::overflow_error(
+                "BBR state identifier range exhausted");
         }
-        if (!already_counted && parallel_control_ != nullptr &&
-            !parallel_control_->acquire_state()) {
-            state_limited_ = true;
-            stop_ = true;
-            return false;
+        if (!already_counted && parallel_control_ != nullptr) {
+            parallel_control_->note_state_created();
         }
         return true;
     }
@@ -4646,7 +4602,7 @@ private:
 
     [[nodiscard]] bool prepare_store_append(
         std::uint64_t other_memory_bytes) {
-        while (!store_.prepare_append(maximum_states_, other_memory_bytes,
+        while (!store_.prepare_append(other_memory_bytes,
                                       memory_limit_bytes_)) {
             if (!grow_memory_capacity()) {
                 return false;
@@ -4711,7 +4667,6 @@ private:
     ExactStateTable exact_table_;
     AssignedProfileTable profile_table_;
     std::unique_ptr<BinPackingBound> bin_packing_;
-    std::uint64_t maximum_states_ = 0;
     Assignment incumbent_;
     int upper_bound_ = 0;
     std::vector<std::vector<QueueEntry>> heaps_;
@@ -4724,7 +4679,6 @@ private:
     bool optimal_ = false;
     bool search_initialized_ = false;
     bool timed_out_ = false;
-    bool state_limited_ = false;
     bool memory_limited_ = false;
     bool binlb_disabled_after_abort_ = false;
     bool binlb_budget_exhausted_ = false;
@@ -4868,8 +4822,6 @@ void restore_requested_configuration_metadata(
     statistics.complete_dff_enabled =
         requested_config.bbr_enable_complete_dff;
     statistics.binlb_enabled = requested_config.bbr_enable_binlb;
-    statistics.configured_state_limit = requested_config.bbr_state_limit;
-    statistics.state_limit = requested_config.bbr_state_limit;
     statistics.requested_threads = requested_config.threads;
     statistics.threads = resolve_thread_count(requested_config.threads);
     statistics.parallel = statistics.threads > 1;
@@ -4936,8 +4888,6 @@ struct ParallelWorkerQueue {
     early_result.statistics.parallel = true;
     early_result.statistics.requested_threads = requested_config.threads;
     early_result.statistics.threads = thread_count;
-    early_result.statistics.configured_state_limit = config.bbr_state_limit;
-    early_result.statistics.state_limit = config.bbr_state_limit;
     early_result.statistics.memory_limit_bytes =
         config.bbr_memory_limit_mb * kMegabyte;
 
@@ -4971,8 +4921,8 @@ struct ParallelWorkerQueue {
     // created only by bounded subtree donations from active owners.
     const std::uint64_t initial_task_target = std::min<std::uint64_t>(
         static_cast<std::uint64_t>(thread_count), 8U);
-    const std::size_t target_tasks = static_cast<std::size_t>(
-        std::min(config.bbr_state_limit, initial_task_target));
+    const std::size_t target_tasks =
+        static_cast<std::size_t>(initial_task_target);
     const std::uint64_t estimated_task_bytes = std::max<std::uint64_t>(
         8U * kMegabyte,
         saturated_add(
@@ -5027,8 +4977,8 @@ struct ParallelWorkerQueue {
         early_result.statistics.memory_limited = true;
         return early_result;
     }
-    ParallelControl control(config.bbr_state_limit, initial_incumbent,
-                            *shared_memory, local_memory_total, thread_count);
+    ParallelControl control(initial_incumbent, *shared_memory,
+                            local_memory_total, thread_count);
 
     Config splitter_config = config;
     splitter_config.bbr_memory_limit_mb = worker_memory_ceiling_mb;
@@ -5050,8 +5000,6 @@ struct ParallelWorkerQueue {
     split.result.statistics.parallel_split_seconds =
         split.result.statistics.search_seconds;
     split.result.statistics.memory_limit_bytes = global_memory;
-    split.result.statistics.state_limit = config.bbr_state_limit;
-    split.result.statistics.configured_state_limit = config.bbr_state_limit;
 
     const std::uint64_t actual_task_memory = task_memory_bytes(split.tasks);
     if (actual_task_memory > estimated_task_bytes) {
@@ -5064,8 +5012,6 @@ struct ParallelWorkerQueue {
         split.result.optimal = split.result.optimal &&
             reason == ParallelStopReason::kNone;
         split.result.timed_out = reason == ParallelStopReason::kTimeLimit;
-        split.result.state_limited =
-            reason == ParallelStopReason::kStateLimit;
         split.result.memory_limited =
             reason == ParallelStopReason::kMemoryLimit;
         split.result.incumbent = control.incumbent();
@@ -5073,7 +5019,6 @@ struct ParallelWorkerQueue {
             ? split.result.incumbent.bin_count
             : initial_lower_bound;
         split.result.statistics.timed_out = split.result.timed_out;
-        split.result.statistics.state_limited = split.result.state_limited;
         split.result.statistics.memory_limited = split.result.memory_limited;
         split.result.statistics.shared_memory_saturated =
             control.shared_memory_saturated();
@@ -5546,8 +5491,6 @@ struct ParallelWorkerQueue {
     combined.peak_memory_bytes = std::min(
         global_memory, accounted_peak_memory);
     combined.memory_limit_bytes = global_memory;
-    combined.state_limit = config.bbr_state_limit;
-    combined.configured_state_limit = config.bbr_state_limit;
     combined.search_seconds =
         std::chrono::duration<double>(Clock::now() - parallel_start).count();
     combined.exact_search_seconds = combined.search_seconds;
@@ -5562,14 +5505,12 @@ struct ParallelWorkerQueue {
     result.attempted = true;
     result.optimal = exact_termination;
     result.timed_out = reason == ParallelStopReason::kTimeLimit;
-    result.state_limited = reason == ParallelStopReason::kStateLimit;
     result.memory_limited = reason == ParallelStopReason::kMemoryLimit;
     result.incumbent = control.incumbent();
     result.certified_lower_bound = result.optimal
         ? result.incumbent.bin_count
         : initial_lower_bound;
     combined.timed_out = result.timed_out;
-    combined.state_limited = result.state_limited;
     combined.memory_limited = result.memory_limited;
     result.statistics = std::move(combined);
     return result;
@@ -5603,17 +5544,13 @@ BbrResult run_branch_bound_remember(const PreparedInstance& prepared,
         return result;
     };
     constexpr double kPreliminaryDffProbeSeconds = 0.001;
-    constexpr std::uint64_t kPreliminaryDffProbeStates = 500U;
     if (config.bbr_enable_complete_dff &&
         complete_dff_applicable(prepared.search_instance) &&
-        config.bbr_state_limit > kPreliminaryDffProbeStates &&
         deadline.remaining_seconds() > 2.0 * kPreliminaryDffProbeSeconds) {
         Config preliminary_config = config;
         preliminary_config.bbr_enable_complete_dff = false;
         preliminary_config.bbr_enable_generalized_item_dominance = false;
         preliminary_config.bbr_enable_binlb = false;
-        preliminary_config.bbr_state_limit = std::min(
-            config.bbr_state_limit, kPreliminaryDffProbeStates);
         Deadline preliminary_deadline(std::min(
             kPreliminaryDffProbeSeconds, deadline.remaining_seconds()));
         BbrResult preliminary;
@@ -5627,36 +5564,19 @@ BbrResult run_branch_bound_remember(const PreparedInstance& prepared,
             config.bbr_enable_complete_dff;
         preliminary.statistics.generalized_item_dominance_enabled =
             config.bbr_enable_generalized_item_dominance;
-        preliminary.statistics.configured_state_limit =
-            config.bbr_state_limit;
         if (preliminary.optimal || deadline.expired()) {
             if (!preliminary.optimal && deadline.expired()) {
                 preliminary.timed_out = true;
-                preliminary.state_limited = false;
                 preliminary.memory_limited = false;
                 preliminary.statistics.timed_out = true;
-                preliminary.statistics.state_limited = false;
                 preliminary.statistics.memory_limited = false;
             }
             return restore_full_bound(std::move(preliminary));
         }
 
-        const std::uint64_t used_states = std::min(
-            config.bbr_state_limit, preliminary.statistics.states_created);
-        Config exact_config = config;
-        exact_config.bbr_state_limit = config.bbr_state_limit - used_states;
-        if (exact_config.bbr_state_limit == 0U) {
-            preliminary.state_limited = true;
-            preliminary.memory_limited = false;
-            preliminary.timed_out = false;
-            preliminary.statistics.state_limited = true;
-            preliminary.statistics.memory_limited = false;
-            preliminary.statistics.timed_out = false;
-            return restore_full_bound(std::move(preliminary));
-        }
         BbrResult exact = run_parallel_exact_bbr(
             prepared, residual_lower_bound, preliminary.incumbent,
-            exact_config, deadline);
+            config, deadline);
         merge_preliminary_exact_statistics(
             exact.statistics, preliminary.statistics, config);
         return restore_full_bound(std::move(exact));

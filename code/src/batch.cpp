@@ -293,7 +293,6 @@ public:
           problem_(problem),
           threads_(resolve_thread_count(config.threads)),
           time_limit_seconds_(config.time_limit_seconds),
-          state_limit_(config.bbr_state_limit),
           memory_limit_mb_(config.bbr_memory_limit_mb),
           strict_gurobi_(strict_gurobi) {
         std::filesystem::create_directories(log_directory_);
@@ -317,7 +316,6 @@ public:
                 << " threads=" << threads_
                 << " time_limit_seconds=" << std::setprecision(12)
                 << time_limit_seconds_
-                << " state_limit=" << state_limit_
                 << " memory_limit_mb=" << memory_limit_mb_
                 << " gurobi_required=" << (strict_gurobi_ ? 1 : 0);
         event("BATCH_START", {}, details.str());
@@ -385,7 +383,6 @@ public:
                << "threads=" << threads_ << '\n'
                << "time_limit_seconds=" << std::setprecision(12)
                << time_limit_seconds_ << '\n'
-               << "state_limit=" << state_limit_ << '\n'
                << "memory_limit_mb=" << memory_limit_mb_ << '\n'
                << "gurobi_required=" << (strict_gurobi_ ? 1 : 0) << '\n'
                << "exception=" << exception_kind << '\n'
@@ -499,7 +496,6 @@ private:
     ProblemKind problem_;
     int threads_ = 1;
     double time_limit_seconds_ = 0.0;
-    std::uint64_t state_limit_ = 0U;
     std::uint64_t memory_limit_mb_ = 0U;
     bool strict_gurobi_ = false;
     bool healthy_ = true;
@@ -626,7 +622,6 @@ int run_batch(const CommandLineOptions& options) {
                              options.time_limit_seconds) >
                         1e-9 * std::max(1.0, options.time_limit_seconds) ||
                     result.threads != resolve_thread_count(options.threads) ||
-                    result.state_limit != config.bbr_state_limit ||
                     result.memory_limit_mb != options.memory_limit_mb ||
                     result.gurobi_enabled != kHasGurobiSupport ||
                     result.gurobi_required != strict_gurobi ||

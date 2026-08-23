@@ -194,7 +194,6 @@ void require(bool condition, const std::string& message) {
     precpack::Config config =
         precpack::make_solver_config(problem, 10.0, 256, 1);
     config.bbr_enable_root_strengthening = false;
-    config.bbr_state_limit = 5'000'000U;
     return config;
 }
 
@@ -399,7 +398,6 @@ void test_exact_state_memory() {
     config.bbr_enable_profile_dominance = false;
     config.bbr_enable_paper_queue_order = false;
     config.bbr_enable_complete_dff = false;
-    config.bbr_state_limit = 100'000U;
     precpack::Deadline deadline(5.0);
     const precpack::BbrResult result =
         precpack::run_branch_bound_remember(
@@ -425,7 +423,6 @@ void test_exact_state_memory() {
     collision_config.bbr_enable_paper_queue_order = false;
     collision_config.bbr_enable_complete_dff = false;
     collision_config.bbr_enable_closure_bound = false;
-    collision_config.bbr_state_limit = 500'000U;
     precpack::Deadline collision_deadline(5.0);
     const precpack::BbrResult collision_result =
         precpack::run_branch_bound_remember(
@@ -456,7 +453,6 @@ void test_profile_and_item_dominance() {
     profile_config.bbr_enable_generalized_item_dominance = false;
     profile_config.bbr_enable_paper_queue_order = false;
     profile_config.bbr_enable_complete_dff = false;
-    profile_config.bbr_state_limit = 100'000U;
     precpack::Deadline profile_deadline(5.0);
     const precpack::BbrResult profile_result =
         precpack::run_branch_bound_remember(
@@ -489,7 +485,6 @@ void test_profile_and_item_dominance() {
     baseline_config.bbr_enable_paper_queue_order = false;
     baseline_config.bbr_enable_complete_dff = false;
     baseline_config.bbr_enable_generalized_item_dominance = false;
-    baseline_config.bbr_state_limit = 500'000U;
     precpack::Deadline baseline_deadline(5.0);
     const precpack::BbrResult baseline =
         precpack::run_branch_bound_remember(
@@ -537,7 +532,6 @@ void test_profile_and_item_dominance() {
             precpack::ProblemKind::kBppP);
         config.bbr_enable_generalized_item_dominance = false;
         config.bbr_enable_complete_dff = false;
-        config.bbr_state_limit = 500'000U;
         precpack::Deadline deadline(5.0);
         const precpack::BbrResult result =
             precpack::run_branch_bound_remember(
@@ -566,7 +560,6 @@ void test_structured_preprocessing() {
     config.bbr_enable_early_exact_probe = false;
     config.bbr_enable_initial_bdp = false;
     config.initialization_time_limit_seconds = 1.0;
-    config.bbr_state_limit = 100'000U;
     precpack::Deadline initialization_deadline(5.0);
     precpack::Statistics initialization_statistics;
     const precpack::InitialBoundsResult reduced =
@@ -712,17 +705,6 @@ void test_resource_statuses() {
     prepared.original_to_search = prepared.search_to_original;
     prepared.original_item_count = instance.size();
 
-    precpack::Config state_config = exact_config();
-    state_config.bbr_state_limit = 1U;
-    precpack::Deadline state_deadline(10.0);
-    const precpack::BbrResult state_limited =
-        precpack::run_branch_bound_remember(
-            prepared, 4, state_config, state_deadline);
-    require(!state_limited.optimal &&
-                state_limited.state_limited &&
-                state_limited.statistics.states_created <= 1U,
-            "state-limit termination was misclassified");
-
     precpack::Config time_config = exact_config();
     precpack::Deadline time_deadline(1e-12);
     const precpack::BbrResult timed_out =
@@ -731,6 +713,13 @@ void test_resource_statuses() {
     require(!timed_out.optimal &&
                 timed_out.timed_out,
             "time-limit termination was misclassified");
+    require(std::string(precpack::to_string(precpack::SolveStatus::kOptimal)) ==
+                    "OPTIMAL" &&
+                std::string(precpack::to_string(
+                    precpack::SolveStatus::kTimeLimit)) == "TIME_LIMIT" &&
+                std::string(precpack::to_string(
+                    precpack::SolveStatus::kMemoryLimit)) == "MEMORY_LIMIT",
+            "public result statuses changed");
 }
 
 #if !PRECPACK_HAS_GUROBI

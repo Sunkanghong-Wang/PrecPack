@@ -3160,7 +3160,6 @@ InitialBoundsResult compute_initial_bounds(
         incumbent.bin_count > result.lower_bound &&
         !initialization_deadline->expired()) {
         constexpr double kEarlyProbeSeconds = 0.05;
-        constexpr std::uint64_t kEarlyProbeStates = 20'000U;
         const double probe_budget = std::min(
             {kEarlyProbeSeconds, initialization_deadline->remaining_seconds(),
              deadline.remaining_seconds()});
@@ -3170,8 +3169,6 @@ InitialBoundsResult compute_initial_bounds(
                 config.bbr_enable_structured_preprocessing);
             Config probe_config = config;
             probe_config.threads = 1;
-            probe_config.bbr_state_limit =
-                std::min(config.bbr_state_limit, kEarlyProbeStates);
             probe_config.bbr_enable_root_strengthening = false;
             probe_config.bbr_enable_binlb = false;
             probe_config.bbr_enable_generalized_item_dominance = false;

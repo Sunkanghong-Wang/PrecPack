@@ -9,7 +9,6 @@ struct BbrResult {
     bool attempted = false;
     bool optimal = false;
     bool timed_out = false;
-    bool state_limited = false;
     bool memory_limited = false;
     int certified_lower_bound = 0;
     Assignment incumbent;

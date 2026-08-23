@@ -16,7 +16,6 @@ struct ResultReference {
     std::string problem;
     double time_limit_seconds = 0.0;
     int threads = 0;
-    std::uint64_t state_limit = 0U;
     std::uint64_t memory_limit_mb = 0U;
     bool gurobi_enabled = false;
     bool gurobi_required = false;

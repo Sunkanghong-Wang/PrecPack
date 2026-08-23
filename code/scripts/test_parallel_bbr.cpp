@@ -51,7 +51,6 @@ void require(bool condition, const std::string& message) {
     precpack::Config config;
     config.time_limit_seconds = 10.0;
     config.bbr_memory_limit_mb = 64;
-    config.bbr_state_limit = 100'000;
     config.bbr_enable_complete_dff = false;
     config.bbr_enable_generalized_item_dominance = false;
     config.bbr_enable_jackson = false;
@@ -237,17 +236,6 @@ void test_global_limits() {
     precpack::Config config = base_config();
     config.threads = 2;
 
-    precpack::Config state_config = config;
-    state_config.bbr_state_limit = 1U;
-    precpack::Deadline state_deadline(10.0);
-    const precpack::BbrResult state_limited =
-        precpack::run_branch_bound_remember(
-            prepared, 4, state_config, state_deadline);
-    require(!state_limited.optimal && state_limited.state_limited &&
-                !state_limited.memory_limited &&
-                state_limited.statistics.states_created <= 1U,
-            "the global state cap was treated as a per-worker budget");
-
     precpack::Config memory_config = config;
     memory_config.bbr_memory_limit_mb = 4U;
     precpack::Deadline memory_deadline(10.0);
@@ -255,7 +243,6 @@ void test_global_limits() {
         precpack::run_branch_bound_remember(
             prepared, 4, memory_config, memory_deadline);
     require(!memory_limited.optimal && memory_limited.memory_limited &&
-                !memory_limited.state_limited &&
                 memory_limited.statistics.peak_memory_bytes <=
                     4U * 1024U * 1024U,
             "the global memory cap was exceeded or misclassified");
@@ -265,7 +252,7 @@ void test_global_limits() {
         precpack::run_branch_bound_remember(
             prepared, 4, config, timeout_deadline);
     require(!timed_out.optimal && timed_out.timed_out &&
-                !timed_out.state_limited && !timed_out.memory_limited,
+                !timed_out.memory_limited,
             "the global deadline was misclassified");
 }
 

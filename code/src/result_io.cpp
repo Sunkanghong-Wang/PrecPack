@@ -28,9 +28,9 @@ namespace {
 inline constexpr const char* kResultHeader =
     "instance_key,problem,instance_file,graph_file,n,capacity,status,"
     "lower_bound,upper_bound,gap,time_seconds,time_limit_seconds,threads,"
-    "state_limit,memory_limit_mb,bbr_peak_memory_bytes,gurobi_enabled,"
+    "memory_limit_mb,bbr_peak_memory_bytes,gurobi_enabled,"
     "gurobi_required,solution_file";
-inline constexpr std::size_t kResultColumnCount = 19U;
+inline constexpr std::size_t kResultColumnCount = 18U;
 
 class TemporaryFileGuard {
 public:
@@ -327,8 +327,7 @@ void append_result_csv(const std::filesystem::path& path,
            << solution.upper_bound << ',' << solution.relative_gap << ','
            << solution.stats.total_seconds << ','
            << solution.bbr_stats.time_limit_seconds << ',' << solution.threads
-           << ',' << solution.bbr_stats.configured_state_limit << ','
-           << memory_limit_mb << ','
+           << ',' << memory_limit_mb << ','
            << solution.bbr_stats.peak_memory_bytes << ','
            << (kHasGurobiSupport ? 1 : 0) << ','
            << (solution.gurobi_runtime_required ? 1 : 0) << ','
@@ -428,14 +427,14 @@ std::vector<ResultReference> read_result_references(
                 ": " + path.string());
         }
         const std::uint64_t gurobi = parse_unsigned_csv_field(
-            fields[16], "gurobi_enabled", row, path);
+            fields[15], "gurobi_enabled", row, path);
         if (gurobi > 1U) {
             throw std::runtime_error(
                 "invalid gurobi_enabled in result CSV row " +
                 std::to_string(row) + ": " + path.string());
         }
         const std::uint64_t gurobi_required = parse_unsigned_csv_field(
-            fields[17], "gurobi_required", row, path);
+            fields[16], "gurobi_required", row, path);
         if (gurobi_required > 1U) {
             throw std::runtime_error(
                 "invalid gurobi_required in result CSV row " +
@@ -447,12 +446,11 @@ std::vector<ResultReference> read_result_references(
             parse_double_csv_field(fields[11], "time_limit_seconds", row,
                                    path),
             static_cast<int>(threads),
-            parse_unsigned_csv_field(fields[13], "state_limit", row, path),
-            parse_unsigned_csv_field(fields[14], "memory_limit_mb", row,
+            parse_unsigned_csv_field(fields[13], "memory_limit_mb", row,
                                      path),
             gurobi == 1U,
             gurobi_required == 1U,
-            fields[18],
+            fields[17],
         });
     }
     return references;
