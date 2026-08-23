@@ -28,7 +28,7 @@ PrecPack minimizes the number of positions from position 0 through the last used
 | `bpp-gp-graphs/separation-01/n_XXXX/` | Labeled graphs with separations in $\{0,1\}$ | 3,675 |
 | `bpp-gp-graphs/separation-03/n_XXXX/` | Labeled graphs with separations in $\{0,1,2,3\}$ | 3,675 |
 
-The `.txt` files are shared across problem types. BPP-P uses the seven Otto base groups and the Scholl collection. SALBP-I uses those same files together with `n_0050_permuted`. BPP-GP pairs the Otto base files with one of the two families under `bpp-gp-graphs/`. Problem semantics are selected by `--problem`; no symbolic links or duplicate instance files are required.
+The `.txt` files are shared across problem types. BPP-P uses the seven Otto instance-size sets and the Scholl set. SALBP-I uses those same files together with `n_0050_permuted`. BPP-GP pairs the Otto base files with one of the two labeled-graph sets under `bpp-gp-graphs/`. Problem semantics are selected by `--problem`; no symbolic links or duplicate instance files are required.
 
 ## Instance `.txt` format
 
@@ -90,8 +90,8 @@ bpp-gp-graphs/separation-03/n_0020/instance_n=20_1.graph
 
 ## Sources and acknowledgements
 
-- The Scholl benchmark source is the public [1993 SALBP benchmark collection](https://assembly-line-balancing.de/salbp/benchmark-data-sets-1993/).
-- The Otto SALBP suites are from the public [2013 SALBP benchmark collection](https://assembly-line-balancing.de/salbp/benchmark-data-sets-2013/) accompanying Otto, Otto, and Scholl, [“Systematic data generation and test design for solution algorithms on the example of SALBPGen for assembly line balancing”](https://doi.org/10.1016/j.ejor.2012.12.029), *European Journal of Operational Research* 228(1), 33–45, 2013.
-- The BPP-P and BPP-GP systematic collections follow Kramer, Dell'Amico, and Iori, [“A batching-move iterated local search algorithm for the bin packing problem with generalized precedence constraints”](https://doi.org/10.1080/00207543.2017.1341065), *International Journal of Production Research* 55(21), 6288–6304, 2017.
+- The Scholl instances come from the public [1993 SALBP benchmark set](https://assembly-line-balancing.de/salbp/benchmark-data-sets-1993/).
+- The Otto SALBP instances come from the public [2013 SALBP benchmark set](https://assembly-line-balancing.de/salbp/benchmark-data-sets-2013/) accompanying Otto, Otto, and Scholl, [“Systematic data generation and test design for solution algorithms on the example of SALBPGen for assembly line balancing”](https://doi.org/10.1016/j.ejor.2012.12.029), *European Journal of Operational Research* 228(1), 33–45, 2013.
+- The BPP-P and BPP-GP benchmark sets follow the construction described by Kramer, Dell'Amico, and Iori, [“A batching-move iterated local search algorithm for the bin packing problem with generalized precedence constraints”](https://doi.org/10.1080/00207543.2017.1341065), *International Journal of Production Research* 55(21), 6288–6304, 2017.
 
-We gratefully thank the authors and maintainers of these benchmark collections for making them available to the research community and for supporting reproducible research in packing and assembly-line optimization.
+We gratefully thank the authors and maintainers of these benchmark sets for making them available to the research community and for supporting reproducible research in packing and assembly-line optimization.

@@ -42,4 +42,7 @@ void write_assignment(const std::filesystem::path& path,
 [[nodiscard]] std::vector<ResultReference> read_result_references(
     const std::filesystem::path& path);
 
+void require_unused_instance_key(const std::filesystem::path& path,
+                                 std::string_view instance_key);
+
 }

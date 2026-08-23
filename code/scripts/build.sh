@@ -51,14 +51,47 @@ printf '  Source       : %s\n' "$code_directory"
 printf '  Build        : %s\n' "$build_directory"
 printf '  Gurobi mode  : %s\n' "$gurobi_mode"
 
+cmake_command=""
 if [[ -n "${CMAKE_BIN:-}" ]]; then
     cmake_command="$CMAKE_BIN"
-elif cmake_command="$(command -v cmake 2>/dev/null)"; then
-    :
-else
+elif cmake_path="$(command -v cmake 2>/dev/null)"; then
+    cmake_command="$cmake_path"
+elif [[ "$(uname -s)" == "Darwin" ]]; then
+    cmake_candidates=(
+        "/Applications/CMake.app/Contents/bin/cmake"
+        "/opt/homebrew/bin/cmake"
+        "/usr/local/bin/cmake"
+        "/opt/local/bin/cmake"
+    )
+    if [[ "$(uname -m)" == "arm64" ]]; then
+        cmake_candidates+=(
+            "/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/bin/cmake"
+            "/Applications/CLion.app/Contents/bin/cmake/mac/x64/bin/cmake"
+        )
+    else
+        cmake_candidates+=(
+            "/Applications/CLion.app/Contents/bin/cmake/mac/x64/bin/cmake"
+            "/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/bin/cmake"
+        )
+    fi
+    for candidate in "${cmake_candidates[@]}"; do
+        if [[ -x "$candidate" ]]; then
+            cmake_command="$candidate"
+            break
+        fi
+    done
+fi
+
+if [[ -z "$cmake_command" ]]; then
     printf '\nERROR: CMake was not found.\n' >&2
     printf 'Install CMake 3.20 or newer and make cmake available on PATH,\n' >&2
     printf 'or set CMAKE_BIN to the full path of the CMake executable.\n' >&2
+    exit 1
+fi
+if [[ ! -x "$cmake_command" ]]; then
+    printf '\nERROR: The selected CMake executable is not runnable:\n' >&2
+    printf '  %s\n' "$cmake_command" >&2
+    printf 'Correct CMAKE_BIN or install CMake 3.20 or newer.\n' >&2
     exit 1
 fi
 

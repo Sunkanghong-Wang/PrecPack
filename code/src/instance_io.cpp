@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <charconv>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -43,6 +44,39 @@ namespace {
         throw std::invalid_argument("invalid integer row: " + line);
     }
     return values;
+}
+
+[[nodiscard]] int parse_integer_scalar(
+    const std::string& value,
+    std::string_view field,
+    const std::filesystem::path& path) {
+    int result = 0;
+    const auto [end, error] = std::from_chars(
+        value.data(), value.data() + value.size(), result);
+    if (error != std::errc{} || end != value.data() + value.size()) {
+        throw std::runtime_error(
+            "invalid " + std::string(field) + " in " + path.string());
+    }
+    return result;
+}
+
+[[nodiscard]] double parse_double_scalar(
+    const std::string& value,
+    std::string_view field,
+    const std::filesystem::path& path) {
+    std::size_t parsed = 0U;
+    double result = 0.0;
+    try {
+        result = std::stod(value, &parsed);
+    } catch (const std::exception&) {
+        throw std::runtime_error(
+            "invalid " + std::string(field) + " in " + path.string());
+    }
+    if (parsed != value.size() || !std::isfinite(result)) {
+        throw std::runtime_error(
+            "invalid " + std::string(field) + " in " + path.string());
+    }
+    return result;
 }
 
 void read_graph_file(const std::filesystem::path& path,
@@ -121,6 +155,7 @@ Instance read_instance(const std::filesystem::path& alb_path,
     instance.id = instance_id;
     std::string section;
     std::vector<int> weights;
+    std::vector<unsigned char> weight_seen;
     std::string line;
     while (std::getline(input, line)) {
         line = trim(std::move(line));
@@ -136,16 +171,20 @@ Instance read_instance(const std::filesystem::path& alb_path,
         }
 
         if (section == "<number of tasks>") {
-            const int n = std::stoi(line);
+            const int n = parse_integer_scalar(
+                line, "task count", alb_path);
             if (n <= 0) {
                 throw std::runtime_error("invalid task count in " + alb_path.string());
             }
             weights.assign(static_cast<std::size_t>(n), -1);
+            weight_seen.assign(static_cast<std::size_t>(n), 0U);
         } else if (section == "<cycle time>") {
-            instance.capacity = std::stoi(line);
+            instance.capacity = parse_integer_scalar(
+                line, "cycle time", alb_path);
         } else if (section == "<order strength>") {
             std::replace(line.begin(), line.end(), ',', '.');
-            const double value = std::stod(line);
+            const double value = parse_double_scalar(
+                line, "order strength", alb_path);
             constexpr std::array<double, 3> canonical{0.2, 0.6, 0.9};
             const double closest = *std::min_element(
                 canonical.begin(), canonical.end(), [&](double lhs, double rhs) {
@@ -163,6 +202,11 @@ Instance read_instance(const std::filesystem::path& alb_path,
             if (index < 0 || index >= static_cast<int>(weights.size())) {
                 throw std::runtime_error("task id out of range in " + alb_path.string());
             }
+            if (weight_seen[static_cast<std::size_t>(index)] != 0U) {
+                throw std::runtime_error(
+                    "duplicate task id in " + alb_path.string());
+            }
+            weight_seen[static_cast<std::size_t>(index)] = 1U;
             weights[static_cast<std::size_t>(index)] = values[1];
         } else if (section == "<precedence relations>") {
             const auto values = parse_integers(line);

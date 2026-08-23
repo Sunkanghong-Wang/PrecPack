@@ -13,7 +13,6 @@
 #include <limits>
 #include <numeric>
 #include <optional>
-#include <queue>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -30,6 +29,19 @@ using Clock = std::chrono::steady_clock;
         throw std::invalid_argument("ceil_div requires a nonnegative numerator");
     }
     return static_cast<int>((numerator + denominator - 1) / denominator);
+}
+
+[[nodiscard]] int checked_position_distance(int lhs, int rhs) {
+    const std::int64_t value =
+        static_cast<std::int64_t>(lhs) + static_cast<std::int64_t>(rhs);
+    constexpr std::int64_t kMaximumSupportedBinIndex =
+        static_cast<std::int64_t>(std::numeric_limits<int>::max()) - 1;
+    if (value > kMaximumSupportedBinIndex) {
+        throw std::invalid_argument(
+            "preprocessed precedence path exceeds the supported "
+            "bin-position range");
+    }
+    return static_cast<int>(value);
 }
 
 class JavaRandom {
@@ -209,7 +221,9 @@ struct WorkInstance {
                         .separation;
                 front[static_cast<std::size_t>(next)] =
                     std::max(front[static_cast<std::size_t>(next)],
-                             front[static_cast<std::size_t>(item)] + separation);
+                             checked_position_distance(
+                                 front[static_cast<std::size_t>(item)],
+                                 separation));
             }
         }
         back.assign(static_cast<std::size_t>(n), 0);
@@ -223,7 +237,20 @@ struct WorkInstance {
                         .separation;
                 back[static_cast<std::size_t>(item)] =
                     std::max(back[static_cast<std::size_t>(item)],
-                             separation + back[static_cast<std::size_t>(next)]);
+                             checked_position_distance(
+                                 separation,
+                                 back[static_cast<std::size_t>(next)]));
+            }
+        }
+        for (int item = 0; item < n; ++item) {
+            const std::int64_t required_bin_count =
+                static_cast<std::int64_t>(
+                    front[static_cast<std::size_t>(item)]) +
+                back[static_cast<std::size_t>(item)] + 1;
+            if (required_bin_count > std::numeric_limits<int>::max()) {
+                throw std::invalid_argument(
+                    "preprocessed precedence path exceeds the supported "
+                    "bin-position range");
             }
         }
     }
@@ -909,19 +936,19 @@ void preprocess(WorkInstance& instance) {
     classify_problem_type(instance);
 }
 
-struct Bounds {
-    int lb1 = 0;
-    int lb2 = 0;
-    int lb3 = 0;
-    int lb4 = 0;
+struct CertifiedBounds {
+    int capacity = 0;
+    int precedence_path = 0;
+    int window_dff = 0;
 };
 
-[[nodiscard]] Bounds quick_bounds(const WorkInstance& instance) {
-    Bounds bounds;
-    bounds.lb1 = ceil_div(instance.total_weight, instance.capacity);
-    bounds.lb2 = 1;
+[[nodiscard]] CertifiedBounds quick_bounds(const WorkInstance& instance) {
+    CertifiedBounds bounds;
+    bounds.capacity = ceil_div(instance.total_weight, instance.capacity);
+    bounds.precedence_path = 1;
     for (const int value : instance.front) {
-        bounds.lb2 = std::max(bounds.lb2, value + 1);
+        bounds.precedence_path =
+            std::max(bounds.precedence_path, value + 1);
     }
     return bounds;
 }
@@ -1212,213 +1239,6 @@ private:
     const WorkInstance& instance_;
 };
 
-class Dinic {
-public:
-    explicit Dinic(int vertices) : adjacency_(static_cast<std::size_t>(vertices)),
-                                   level_(static_cast<std::size_t>(vertices)),
-                                   cursor_(static_cast<std::size_t>(vertices)) {}
-
-    void add_edge(int from, int to, int capacity) {
-        Edge forward{to, capacity, static_cast<int>(adjacency_[static_cast<std::size_t>(to)].size())};
-        Edge reverse{from, 0, static_cast<int>(adjacency_[static_cast<std::size_t>(from)].size())};
-        adjacency_[static_cast<std::size_t>(from)].push_back(forward);
-        adjacency_[static_cast<std::size_t>(to)].push_back(reverse);
-    }
-
-    [[nodiscard]] int max_flow(int source, int sink) {
-        int flow = 0;
-        while (build_levels(source, sink)) {
-            std::fill(cursor_.begin(), cursor_.end(), 0);
-            while (const int sent = send(source, sink, std::numeric_limits<int>::max())) {
-                flow += sent;
-            }
-        }
-        return flow;
-    }
-
-private:
-    struct Edge {
-        int to;
-        int capacity;
-        int reverse;
-    };
-
-    [[nodiscard]] bool build_levels(int source, int sink) {
-        std::fill(level_.begin(), level_.end(), -1);
-        std::queue<int> queue;
-        level_[static_cast<std::size_t>(source)] = 0;
-        queue.push(source);
-        while (!queue.empty()) {
-            const int vertex = queue.front();
-            queue.pop();
-            for (const Edge& edge : adjacency_[static_cast<std::size_t>(vertex)]) {
-                if (edge.capacity > 0 && level_[static_cast<std::size_t>(edge.to)] < 0) {
-                    level_[static_cast<std::size_t>(edge.to)] =
-                        level_[static_cast<std::size_t>(vertex)] + 1;
-                    queue.push(edge.to);
-                }
-            }
-        }
-        return level_[static_cast<std::size_t>(sink)] >= 0;
-    }
-
-    int send(int vertex, int sink, int flow) {
-        if (vertex == sink) {
-            return flow;
-        }
-        auto& edges = adjacency_[static_cast<std::size_t>(vertex)];
-        for (int& position = cursor_[static_cast<std::size_t>(vertex)];
-             position < static_cast<int>(edges.size()); ++position) {
-            Edge& edge = edges[static_cast<std::size_t>(position)];
-            if (edge.capacity <= 0 ||
-                level_[static_cast<std::size_t>(edge.to)] !=
-                    level_[static_cast<std::size_t>(vertex)] + 1) {
-                continue;
-            }
-            const int sent = send(edge.to, sink, std::min(flow, edge.capacity));
-            if (sent > 0) {
-                edge.capacity -= sent;
-                adjacency_[static_cast<std::size_t>(edge.to)]
-                          [static_cast<std::size_t>(edge.reverse)]
-                              .capacity += sent;
-                return sent;
-            }
-        }
-        return 0;
-    }
-
-    std::vector<std::vector<Edge>> adjacency_;
-    std::vector<int> level_;
-    std::vector<int> cursor_;
-};
-
-[[nodiscard]] std::vector<int> longest_path_items(const WorkInstance& instance) {
-    constexpr int kUnreachable = std::numeric_limits<int>::min() / 4;
-    const int source = 0;
-    const int sink = instance.n + 1;
-    std::vector<int> distance(static_cast<std::size_t>(instance.n + 2), kUnreachable);
-    std::vector<int> predecessor(static_cast<std::size_t>(instance.n + 2), -1);
-    distance[static_cast<std::size_t>(source)] = 0;
-    for (int item = 0; item < instance.n; ++item) {
-        distance[static_cast<std::size_t>(item + 1)] = 0;
-        predecessor[static_cast<std::size_t>(item + 1)] = source;
-    }
-    for (int item = 0; item < instance.n; ++item) {
-        const int vertex = item + 1;
-        for (int p = instance.succ_offset[static_cast<std::size_t>(item)];
-             p < instance.succ_offset[static_cast<std::size_t>(item + 1)]; ++p) {
-            const int next = instance.succ_to[static_cast<std::size_t>(p)];
-            const int candidate =
-                distance[static_cast<std::size_t>(vertex)] +
-                instance.arcs[static_cast<std::size_t>(
-                    instance.succ_arc[static_cast<std::size_t>(p)])]
-                    .separation;
-            if (distance[static_cast<std::size_t>(next + 1)] < candidate) {
-                distance[static_cast<std::size_t>(next + 1)] = candidate;
-                predecessor[static_cast<std::size_t>(next + 1)] = vertex;
-            }
-        }
-        if (distance[static_cast<std::size_t>(sink)] <
-            distance[static_cast<std::size_t>(vertex)]) {
-            distance[static_cast<std::size_t>(sink)] =
-                distance[static_cast<std::size_t>(vertex)];
-            predecessor[static_cast<std::size_t>(sink)] = vertex;
-        }
-    }
-    std::vector<int> path;
-    for (int vertex = predecessor[static_cast<std::size_t>(sink)]; vertex > source;
-         vertex = predecessor[static_cast<std::size_t>(vertex)]) {
-        path.push_back(vertex - 1);
-    }
-    std::reverse(path.begin(), path.end());
-    return path;
-}
-
-[[nodiscard]] int compute_lb3(int upper_bound,
-                              const WorkInstance& instance,
-                              const ConflictGraph& conflicts) {
-    const std::vector<int> path = longest_path_items(instance);
-    std::vector<int> bin_of_item(static_cast<std::size_t>(instance.n), -1);
-    std::vector<int> remaining_capacity;
-    std::vector<std::vector<int>> bin_items;
-    remaining_capacity.push_back(instance.capacity);
-    bin_items.emplace_back();
-    for (const int item : path) {
-        while (true) {
-            const int bin = static_cast<int>(remaining_capacity.size()) - 1;
-            bool feasible = remaining_capacity.back() >=
-                            instance.items[static_cast<std::size_t>(item)].weight;
-            for (int p = instance.pred_offset[static_cast<std::size_t>(item)];
-                 feasible && p < instance.pred_offset[static_cast<std::size_t>(item + 1)]; ++p) {
-                const int predecessor = instance.pred_from[static_cast<std::size_t>(p)];
-                if (bin_of_item[static_cast<std::size_t>(predecessor)] < 0) {
-                    continue;
-                }
-                const int separation =
-                    instance.arcs[static_cast<std::size_t>(
-                        instance.pred_arc[static_cast<std::size_t>(p)])]
-                        .separation;
-                feasible = bin - bin_of_item[static_cast<std::size_t>(predecessor)] >=
-                           separation;
-            }
-            if (feasible) {
-                bin_of_item[static_cast<std::size_t>(item)] = bin;
-                remaining_capacity.back() -=
-                    instance.items[static_cast<std::size_t>(item)].weight;
-                bin_items.back().push_back(item);
-                break;
-            }
-            remaining_capacity.push_back(instance.capacity);
-            bin_items.emplace_back();
-        }
-    }
-
-    std::vector<int> remaining_items;
-    remaining_items.reserve(static_cast<std::size_t>(instance.n - path.size()));
-    std::int64_t remaining_weight = 0;
-    for (int item = 0; item < instance.n; ++item) {
-        if (bin_of_item[static_cast<std::size_t>(item)] < 0) {
-            remaining_items.push_back(item);
-            remaining_weight += instance.items[static_cast<std::size_t>(item)].weight;
-        }
-    }
-    const int item_count = static_cast<int>(remaining_items.size());
-    const int bin_count = static_cast<int>(remaining_capacity.size());
-    const int source = 0;
-    const int item_start = 1;
-    const int bin_start = item_start + item_count;
-    const int sink = bin_start + bin_count;
-    Dinic flow(sink + 1);
-    for (int position = 0; position < item_count; ++position) {
-        const int item = remaining_items[static_cast<std::size_t>(position)];
-        const int weight = instance.items[static_cast<std::size_t>(item)].weight;
-        flow.add_edge(source, item_start + position, weight);
-        for (int bin = 0; bin < bin_count; ++bin) {
-            if (bin < instance.front[static_cast<std::size_t>(item)] ||
-                bin + 1 + instance.back[static_cast<std::size_t>(item)] > upper_bound) {
-                continue;
-            }
-            bool compatible = true;
-            for (const int packed : bin_items[static_cast<std::size_t>(bin)]) {
-                if (conflicts.conflicts(item, packed)) {
-                    compatible = false;
-                    break;
-                }
-            }
-            if (compatible) {
-                flow.add_edge(item_start + position, bin_start + bin, weight);
-            }
-        }
-    }
-    for (int bin = 0; bin < bin_count; ++bin) {
-        flow.add_edge(bin_start + bin, sink,
-                      remaining_capacity[static_cast<std::size_t>(bin)]);
-    }
-    const int packed_flow = flow.max_flow(source, sink);
-    return bin_count +
-           ceil_div(remaining_weight - packed_flow, instance.capacity);
-}
-
 template <typename WeightAt>
 [[nodiscard]] int exact_dff_lower_bound(std::size_t item_count,
                                         int capacity,
@@ -1513,7 +1333,8 @@ template <typename WeightAt>
         });
 }
 
-[[nodiscard]] int compute_lb4(const WorkInstance& instance) {
+[[nodiscard]] int compute_window_dff_lower_bound(
+    const WorkInstance& instance) {
     int longest = 0;
     for (const int value : instance.front) {
         longest = std::max(longest, value);
@@ -3288,8 +3109,9 @@ InitialBoundsResult compute_initial_bounds(
     statistics.preprocessing_seconds +=
         std::chrono::duration<double>(Clock::now() - preprocessing_start).count();
     const auto lower_start = Clock::now();
-    Bounds bounds = quick_bounds(working);
-    result.lower_bound = std::max(bounds.lb1, bounds.lb2);
+    CertifiedBounds bounds = quick_bounds(working);
+    result.lower_bound =
+        std::max(bounds.capacity, bounds.precedence_path);
     statistics.lower_bound_seconds +=
         std::chrono::duration<double>(Clock::now() - lower_start).count();
 
@@ -3304,18 +3126,11 @@ InitialBoundsResult compute_initial_bounds(
     statistics.upper_bound_seconds +=
         std::chrono::duration<double>(Clock::now() - fit_start).count();
 
-    const ConflictGraph conflicts = build_conflict_graph(working);
     if (incumbent.bin_count > result.lower_bound) {
         const auto start = Clock::now();
-        bounds.lb3 = compute_lb3(incumbent.bin_count, working, conflicts);
-        result.lower_bound = std::max(result.lower_bound, bounds.lb3);
-        statistics.lower_bound_seconds +=
-            std::chrono::duration<double>(Clock::now() - start).count();
-    }
-    if (incumbent.bin_count > result.lower_bound) {
-        const auto start = Clock::now();
-        bounds.lb4 = compute_lb4(working);
-        result.lower_bound = std::max(result.lower_bound, bounds.lb4);
+        bounds.window_dff = compute_window_dff_lower_bound(working);
+        result.lower_bound =
+            std::max(result.lower_bound, bounds.window_dff);
         statistics.lower_bound_seconds +=
             std::chrono::duration<double>(Clock::now() - start).count();
     }
@@ -3336,15 +3151,6 @@ InitialBoundsResult compute_initial_bounds(
             std::chrono::duration<double>(Clock::now() - start).count();
         if (better_state(candidate, incumbent)) {
             incumbent = std::move(candidate);
-            if (incumbent.bin_count > result.lower_bound) {
-                const auto lb_start = Clock::now();
-                bounds.lb3 = compute_lb3(
-                    incumbent.bin_count, working, conflicts);
-                result.lower_bound = std::max(
-                    result.lower_bound, bounds.lb3);
-                statistics.lower_bound_seconds +=
-                    std::chrono::duration<double>(Clock::now() - lb_start).count();
-            }
         }
     }
 
@@ -3385,17 +3191,6 @@ InitialBoundsResult compute_initial_bounds(
                 better_state(probe_incumbent, incumbent);
             if (probe.optimal || probe_improved) {
                 incumbent = std::move(probe_incumbent);
-                if (!probe.optimal &&
-                    incumbent.bin_count > result.lower_bound) {
-                    const auto lb_start = Clock::now();
-                    bounds.lb3 = compute_lb3(
-                        incumbent.bin_count, working, conflicts);
-                    result.lower_bound =
-                        std::max(result.lower_bound, bounds.lb3);
-                    statistics.lower_bound_seconds +=
-                        std::chrono::duration<double>(Clock::now() - lb_start)
-                            .count();
-                }
             }
             if (probe.optimal) {
                 result.lower_bound = incumbent.bin_count;
@@ -3421,16 +3216,6 @@ InitialBoundsResult compute_initial_bounds(
                 bounded_dp.transitions_generated();
             if (better_state(candidate, incumbent)) {
                 incumbent = std::move(candidate);
-                if (incumbent.bin_count > result.lower_bound) {
-                    const auto lb_start = Clock::now();
-                    bounds.lb3 = compute_lb3(
-                        incumbent.bin_count, working, conflicts);
-                    result.lower_bound =
-                        std::max(result.lower_bound, bounds.lb3);
-                    statistics.lower_bound_seconds +=
-                        std::chrono::duration<double>(Clock::now() - lb_start)
-                            .count();
-                }
             }
         };
 

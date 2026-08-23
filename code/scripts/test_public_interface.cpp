@@ -304,12 +304,12 @@ void test_batch_pairing() {
                 file_pair.front().graph_path == canonical(graph_01),
             "single BPP-GP instance/graph pairing failed");
 
-    const std::vector<precpack::BatchCase> file_with_graph_collection =
+    const std::vector<precpack::BatchCase> file_with_graph_set =
         precpack::collect_batch_cases(
             precpack::ProblemKind::kBppGp, instance, graph_root,
             instance_root, graph_root);
-    require(file_with_graph_collection.size() == 2U,
-            "single BPP-GP instance/graph-collection pairing failed");
+    require(file_with_graph_set.size() == 2U,
+            "single BPP-GP instance/graph-set pairing failed");
 
     const std::vector<precpack::BatchCase> size_pair =
         precpack::collect_batch_cases(
@@ -321,14 +321,14 @@ void test_batch_pairing() {
                 size_pair.front().graph_path == canonical(graph_01),
             "same-size BPP-GP directory pairing failed");
 
-    const std::vector<precpack::BatchCase> collection_with_graph_file =
+    const std::vector<precpack::BatchCase> set_with_graph_file =
         precpack::collect_batch_cases(
             precpack::ProblemKind::kBppGp, instance_root / "otto", graph_01,
             instance_root, graph_root);
-    require(collection_with_graph_file.size() == 1U &&
-                collection_with_graph_file.front().instance_path ==
+    require(set_with_graph_file.size() == 1U &&
+                set_with_graph_file.front().instance_path ==
                     canonical(instance),
-            "BPP-GP instance-collection/single-graph pairing failed");
+            "BPP-GP instance-set/single-graph pairing failed");
 
     const std::vector<precpack::BatchCase> default_pairs =
         precpack::collect_batch_cases(precpack::ProblemKind::kBppGp,
@@ -337,7 +337,7 @@ void test_batch_pairing() {
     require(default_pairs.size() == 2U &&
                 default_pairs[0].graph_path == canonical(graph_01) &&
                 default_pairs[1].graph_path == canonical(graph_03),
-            "default BPP-GP collection pairing failed");
+            "default BPP-GP benchmark-set pairing failed");
 
     bool rejected_mismatch = false;
     const std::filesystem::path other_graph =
@@ -449,6 +449,53 @@ void test_batch_caller_directory() {
             "check-only batch unexpectedly created its output directory");
 }
 
+void test_batch_failure_logging() {
+    TemporaryDirectory temporary_directory;
+    const std::filesystem::path instance_path =
+        temporary_directory.path() / "invalid-instance.txt";
+    const std::filesystem::path output_directory =
+        temporary_directory.path() / "results";
+    write_text_file(instance_path, "this is not a PrecPack instance\n");
+
+    precpack::CommandLineOptions options;
+    options.batch_mode = true;
+    options.problem = precpack::ProblemKind::kBppP;
+    options.input_path = instance_path;
+    options.output_directory = output_directory;
+    options.time_limit_seconds = 1.0;
+    options.memory_limit_mb = 64U;
+    options.threads = 1;
+    require(precpack::run_batch(options) == 1,
+            "an invalid batch instance did not report failure");
+
+    const std::filesystem::path canonical_instance =
+        std::filesystem::weakly_canonical(instance_path);
+    const std::string key =
+        precpack::make_instance_key(canonical_instance, std::nullopt);
+    const std::filesystem::path event_path =
+        output_directory / "logs" / "batch-events.log";
+    const std::filesystem::path failure_path =
+        output_directory / "logs" /
+        ("bpp-p__" + key + ".failure.log");
+    const std::string events = read_text_file(event_path);
+    require(events.find("event=BATCH_START") != std::string::npos &&
+                events.find("event=START instance_key=" + key) !=
+                    std::string::npos &&
+                events.find("event=ERROR instance_key=" + key) !=
+                    std::string::npos &&
+                events.find("event=BATCH_END failures=1") !=
+                    std::string::npos,
+            "batch event log does not preserve the failed attempt");
+    const std::string failure = read_text_file(failure_path);
+    require(failure.find("event=ERROR") != std::string::npos &&
+                failure.find("instance_key=" + key) != std::string::npos &&
+                failure.find("threads=1") != std::string::npos &&
+                failure.find("exception=std::exception") !=
+                    std::string::npos &&
+                failure.find("message=") != std::string::npos,
+            "per-instance failure log is incomplete");
+}
+
 void test_instance_file_validation() {
     TemporaryDirectory temporary_directory;
     const std::filesystem::path& data = temporary_directory.path();
@@ -475,6 +522,52 @@ void test_instance_file_validation() {
     write_text_file(data / "invalid_graph_missing_count.graph", "1 4 2\n");
     write_text_file(data / "invalid_graph_count_mismatch.graph", "2\n1 4 2\n");
     write_text_file(data / "invalid_graph_extra_column.graph", "1\n1 4 2 9\n");
+    write_text_file(data / "invalid_task_count.txt", R"(<number of tasks>
+4 tasks
+<cycle time>
+10
+<task times>
+1 6
+2 4
+3 6
+4 4
+<end>
+)");
+    write_text_file(data / "invalid_cycle_time.txt", R"(<number of tasks>
+4
+<cycle time>
+10 seconds
+<task times>
+1 6
+2 4
+3 6
+4 4
+<end>
+)");
+    write_text_file(data / "invalid_order_strength.txt", R"(<number of tasks>
+4
+<cycle time>
+10
+<order strength>
+0.6 extra
+<task times>
+1 6
+2 4
+3 6
+4 4
+<end>
+)");
+    write_text_file(data / "duplicate_task_id.txt", R"(<number of tasks>
+4
+<cycle time>
+10
+<task times>
+1 6
+1 4
+3 6
+4 4
+<end>
+)");
 
     const precpack::Instance instance = precpack::read_instance(
         data / "simple.txt", data / "generalized.graph", "BPP-GP-01", 7);
@@ -503,6 +596,23 @@ void test_instance_file_validation() {
             rejected = true;
         }
         require(rejected, std::string("malformed graph was accepted: ") +
+                              filename);
+    }
+
+    for (const char* filename : {
+             "invalid_task_count.txt",
+             "invalid_cycle_time.txt",
+             "invalid_order_strength.txt",
+             "duplicate_task_id.txt",
+         }) {
+        bool rejected = false;
+        try {
+            static_cast<void>(precpack::read_instance(
+                data / filename, std::nullopt, "BPP-P"));
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        require(rejected, std::string("malformed ALB file was accepted: ") +
                               filename);
     }
 }
@@ -609,6 +719,10 @@ void test_output_schema() {
     solution.assignment.bin_count = 2;
 
     precpack::write_assignment(assignment_path, instance, solution);
+    std::filesystem::path temporary_assignment_path = assignment_path;
+    temporary_assignment_path += ".tmp";
+    require(!std::filesystem::exists(temporary_assignment_path),
+            "completed assignment write left a temporary file");
     precpack::append_result_csv(
         csv_path, "case,1", "data/case,1.txt", std::nullopt, instance,
         solution, "solutions/case.sol");
@@ -662,6 +776,25 @@ void test_output_schema() {
                 "Bin 1: 1 2\nBin 2: 3\n",
             "assignment file contains redundant metadata or changed format");
 
+    bool rejected_duplicate_key = false;
+    try {
+        precpack::require_unused_instance_key(csv_path, "case,1");
+    } catch (const std::runtime_error&) {
+        rejected_duplicate_key = true;
+    }
+    require(rejected_duplicate_key,
+            "an existing single-instance result key was accepted");
+    precpack::require_unused_instance_key(csv_path, "unused-case");
+
+    precpack::Solution replacement = solution;
+    replacement.assignment.bin_of_item = {0, 1, 2};
+    replacement.assignment.bin_count = 3;
+    precpack::write_assignment(assignment_path, instance, replacement);
+    require(read_text_file(assignment_path) ==
+                "Bin 1: 1\nBin 2: 2\nBin 3: 3\n" &&
+                !std::filesystem::exists(temporary_assignment_path),
+            "atomic assignment replacement failed");
+
     const std::filesystem::path incompatible_path =
         temporary_directory.path() / "incompatible.csv";
     write_text_file(incompatible_path, "different_header\n");
@@ -708,6 +841,7 @@ int main() {
         test_batch_pairing();
         test_batch_resume_profile();
         test_batch_caller_directory();
+        test_batch_failure_logging();
         test_instance_file_validation();
         test_bpp_profile();
         test_parallel_profile();

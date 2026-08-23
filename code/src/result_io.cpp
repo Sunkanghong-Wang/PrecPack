@@ -14,6 +14,13 @@
 #include <system_error>
 #include <utility>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace precpack {
 namespace {
 
@@ -23,6 +30,64 @@ inline constexpr const char* kResultHeader =
     "state_limit,memory_limit_mb,bbr_peak_memory_bytes,gurobi_enabled,"
     "gurobi_required,solution_file";
 inline constexpr std::size_t kResultColumnCount = 19U;
+
+class TemporaryFileGuard {
+public:
+    explicit TemporaryFileGuard(std::filesystem::path path)
+        : path_(std::move(path)) {}
+
+    ~TemporaryFileGuard() {
+        if (path_.empty()) {
+            return;
+        }
+        std::error_code error;
+        std::filesystem::remove(path_, error);
+    }
+
+    void release() noexcept {
+        path_.clear();
+    }
+
+private:
+    std::filesystem::path path_;
+};
+
+void finish_output(std::ofstream& output,
+                   const std::filesystem::path& path,
+                   std::string_view description) {
+    output.flush();
+    if (!output) {
+        throw std::runtime_error(
+            "cannot flush " + std::string(description) + ": " +
+            path.string());
+    }
+    output.close();
+    if (!output) {
+        throw std::runtime_error(
+            "cannot close " + std::string(description) + ": " +
+            path.string());
+    }
+}
+
+void replace_file(const std::filesystem::path& source,
+                  const std::filesystem::path& destination) {
+#if defined(_WIN32)
+    if (MoveFileExW(source.c_str(), destination.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
+        throw std::system_error(
+            static_cast<int>(GetLastError()), std::system_category(),
+            "cannot replace assignment file: " + destination.string());
+    }
+#else
+    std::error_code error;
+    std::filesystem::rename(source, destination, error);
+    if (error) {
+        throw std::system_error(
+            error, "cannot replace assignment file: " +
+                       destination.string());
+    }
+#endif
+}
 
 [[nodiscard]] std::string csv_field(std::string_view value) {
     if (value.find_first_of(",\"\r\n") == std::string_view::npos) {
@@ -241,18 +306,15 @@ void append_result_csv(const std::filesystem::path& path,
     if (!needs_header) {
         require_compatible_header(path);
     }
-    std::ofstream output(path, std::ios::app | std::ios::binary);
-    if (!output) {
-        throw std::runtime_error("cannot open result CSV: " + path.string());
-    }
+    std::ostringstream record;
     if (needs_header) {
-        output << kResultHeader << '\n';
+        record << kResultHeader << '\n';
     }
 
     constexpr std::uint64_t kMegabyte = 1024ULL * 1024ULL;
     const std::uint64_t memory_limit_mb =
         solution.bbr_stats.memory_limit_bytes / kMegabyte;
-    output << std::setprecision(12) << csv_field(instance_key) << ','
+    record << std::setprecision(12) << csv_field(instance_key) << ','
            << csv_field(instance.problem_type) << ','
            << csv_field(recorded_path(instance_path)) << ','
            << csv_field(graph_path.has_value()
@@ -269,6 +331,18 @@ void append_result_csv(const std::filesystem::path& path,
            << (kHasGurobiSupport ? 1 : 0) << ','
            << (solution.gurobi_runtime_required ? 1 : 0) << ','
            << csv_field(assignment_path.generic_string()) << '\n';
+
+    const std::string serialized = record.str();
+    std::ofstream output(path, std::ios::app | std::ios::binary);
+    if (!output) {
+        throw std::runtime_error("cannot open result CSV: " + path.string());
+    }
+    output.write(serialized.data(),
+                 static_cast<std::streamsize>(serialized.size()));
+    if (!output) {
+        throw std::runtime_error("cannot write result CSV: " + path.string());
+    }
+    finish_output(output, path, "result CSV");
 }
 
 void write_assignment(const std::filesystem::path& path,
@@ -277,24 +351,38 @@ void write_assignment(const std::filesystem::path& path,
     if (!path.parent_path().empty()) {
         std::filesystem::create_directories(path.parent_path());
     }
-    std::ofstream output(path, std::ios::binary);
-    if (!output) {
-        throw std::runtime_error("cannot open assignment file: " +
-                                 path.string());
-    }
-
-    for (int bin = 0; bin < solution.assignment.bin_count; ++bin) {
-        output << "Bin " << bin + 1 << ':';
-        for (int item = 0; item < instance.size(); ++item) {
-            if (solution.assignment.bin_of_item[static_cast<std::size_t>(item)] !=
-                bin) {
-                continue;
-            }
-            const Item& data = instance.items[static_cast<std::size_t>(item)];
-            output << ' ' << data.original_index + 1;
+    std::filesystem::path temporary_path = path;
+    temporary_path += ".tmp";
+    TemporaryFileGuard temporary_file(temporary_path);
+    {
+        std::ofstream output(
+            temporary_path, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            throw std::runtime_error("cannot open assignment file: " +
+                                     temporary_path.string());
         }
-        output << '\n';
+
+        for (int bin = 0; bin < solution.assignment.bin_count; ++bin) {
+            output << "Bin " << bin + 1 << ':';
+            for (int item = 0; item < instance.size(); ++item) {
+                if (solution.assignment.bin_of_item[
+                        static_cast<std::size_t>(item)] != bin) {
+                    continue;
+                }
+                const Item& data =
+                    instance.items[static_cast<std::size_t>(item)];
+                output << ' ' << data.original_index + 1;
+            }
+            output << '\n';
+        }
+        if (!output) {
+            throw std::runtime_error(
+                "cannot write assignment file: " + temporary_path.string());
+        }
+        finish_output(output, temporary_path, "assignment file");
     }
+    replace_file(temporary_path, path);
+    temporary_file.release();
 }
 
 std::vector<ResultReference> read_result_references(
@@ -366,6 +454,18 @@ std::vector<ResultReference> read_result_references(
         });
     }
     return references;
+}
+
+void require_unused_instance_key(const std::filesystem::path& path,
+                                 std::string_view instance_key) {
+    for (const ResultReference& reference : read_result_references(path)) {
+        if (reference.instance_key == instance_key) {
+            throw std::runtime_error(
+                "result CSV already contains instance_key=" +
+                std::string(instance_key) +
+                "; use a different output directory or batch mode");
+        }
+    }
 }
 
 }

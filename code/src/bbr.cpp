@@ -20,7 +20,9 @@
 #include <new>
 #include <numeric>
 #include <optional>
+#include <source_location>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -35,9 +37,16 @@ constexpr std::uint32_t kInvalidState =
     std::numeric_limits<std::uint32_t>::max();
 
 [[nodiscard]] int ceil_div_i64(std::int64_t numerator,
-                               std::int64_t denominator) {
+                               std::int64_t denominator,
+                               const std::source_location location =
+                                   std::source_location::current()) {
     if (numerator < 0 || denominator <= 0) {
-        throw std::invalid_argument("invalid BBR integer division");
+        throw std::logic_error(
+            "invalid BBR integer division at " +
+            std::string(location.file_name()) + ":" +
+            std::to_string(location.line()) +
+            " (numerator=" + std::to_string(numerator) +
+            ", denominator=" + std::to_string(denominator) + ")");
     }
     return static_cast<int>((numerator + denominator - 1) / denominator);
 }
@@ -1138,135 +1147,157 @@ private:
 };
 
 struct StateStore {
-    StateStore(std::size_t key_word_count, int transform_count)
-        : key_words(key_word_count), dff_count(transform_count) {}
+    static constexpr std::size_t kChunkShift = 14U;
+    static constexpr std::size_t kChunkStates = std::size_t{1} << kChunkShift;
+    static constexpr std::size_t kChunkMask = kChunkStates - 1U;
 
-    void reserve(std::size_t count) {
-        try {
-            keys.reserve(count * key_words);
-            hashes.reserve(count);
-            assigned_hashes.reserve(count);
-            parents.reserve(count);
-            depths.reserve(count);
-            bounds.reserve(count);
-            versions.reserve(count);
-            queued.reserve(count);
-            assigned_weights.reserve(count);
-            assigned_counts.reserve(count);
-            dff_sums.reserve(count * static_cast<std::size_t>(dff_count));
-            profile_next.reserve(count);
-        } catch (...) {
-            refresh_memory_bytes();
-            throw;
+private:
+    struct Chunk {
+        Chunk(std::size_t capacity,
+              std::size_t key_word_count,
+              std::size_t transform_count)
+            : capacity(capacity),
+              keys(new std::uint64_t[capacity * key_word_count]),
+              hashes(new std::uint64_t[capacity]),
+              assigned_hashes(new std::uint64_t[capacity]),
+              parents(new std::uint32_t[capacity]),
+              depths(new int[capacity]),
+              bounds(new int[capacity]),
+              versions(new std::uint32_t[capacity]),
+              queued(new unsigned char[capacity]),
+              assigned_weights(new std::int64_t[capacity]),
+              assigned_counts(new int[capacity]),
+              dff_sums(transform_count == 0U
+                           ? nullptr
+                           : new std::int64_t[capacity * transform_count]),
+              profile_next(new std::uint32_t[capacity]) {}
+
+        std::size_t capacity = 0U;
+        std::unique_ptr<std::uint64_t[]> keys;
+        std::unique_ptr<std::uint64_t[]> hashes;
+        std::unique_ptr<std::uint64_t[]> assigned_hashes;
+        std::unique_ptr<std::uint32_t[]> parents;
+        std::unique_ptr<int[]> depths;
+        std::unique_ptr<int[]> bounds;
+        std::unique_ptr<std::uint32_t[]> versions;
+        std::unique_ptr<unsigned char[]> queued;
+        std::unique_ptr<std::int64_t[]> assigned_weights;
+        std::unique_ptr<int[]> assigned_counts;
+        std::unique_ptr<std::int64_t[]> dff_sums;
+        std::unique_ptr<std::uint32_t[]> profile_next;
+    };
+
+    template <class T, std::unique_ptr<T[]> Chunk::*Member>
+    class Field {
+    public:
+        explicit Field(StateStore* store) noexcept : store_(store) {}
+
+        [[nodiscard]] T& operator[](std::size_t state) noexcept {
+            Chunk& chunk = *store_->chunks_[state >> kChunkShift];
+            return (chunk.*Member)[state & kChunkMask];
         }
+
+        [[nodiscard]] const T& operator[](std::size_t state) const noexcept {
+            const Chunk& chunk = *store_->chunks_[state >> kChunkShift];
+            return (chunk.*Member)[state & kChunkMask];
+        }
+
+    private:
+        StateStore* store_ = nullptr;
+    };
+
+public:
+    StateStore(std::size_t key_word_count, int transform_count)
+        : hashes(this),
+          assigned_hashes(this),
+          parents(this),
+          depths(this),
+          bounds(this),
+          versions(this),
+          queued(this),
+          assigned_weights(this),
+          assigned_counts(this),
+          profile_next(this),
+          key_words(key_word_count),
+          dff_count(transform_count) {
+        chunks_.reserve(64U);
         refresh_memory_bytes();
     }
 
-    [[nodiscard]] std::uint64_t reserve_peak_bytes(
-        std::size_t count) const noexcept {
-        std::uint64_t persistent = memory_bytes();
-        std::uint64_t peak = persistent;
-        const auto account = [&](std::size_t old_capacity,
-                                 std::size_t desired_capacity,
-                                 std::size_t width) {
-            if (desired_capacity <= old_capacity) {
-                return;
-            }
-            const std::uint64_t old_bytes =
-                saturated_multiply(old_capacity, width);
-            const std::uint64_t new_bytes =
-                saturated_multiply(desired_capacity, width);
-            peak = std::max(peak, saturated_add(persistent, new_bytes));
-            persistent = saturated_add(persistent - old_bytes, new_bytes);
-        };
-        const std::size_t desired_keys =
-            key_words == 0U || count <=
-                std::numeric_limits<std::size_t>::max() / key_words
-                ? count * key_words
-                : std::numeric_limits<std::size_t>::max();
-        const std::size_t dff_width = static_cast<std::size_t>(dff_count);
-        const std::size_t desired_dff =
-            dff_width == 0U || count <=
-                std::numeric_limits<std::size_t>::max() / dff_width
-                ? count * dff_width
-                : std::numeric_limits<std::size_t>::max();
-        account(keys.capacity(), desired_keys, sizeof(std::uint64_t));
-        account(hashes.capacity(), count, sizeof(std::uint64_t));
-        account(assigned_hashes.capacity(), count, sizeof(std::uint64_t));
-        account(parents.capacity(), count, sizeof(std::uint32_t));
-        account(depths.capacity(), count, sizeof(int));
-        account(bounds.capacity(), count, sizeof(int));
-        account(versions.capacity(), count, sizeof(std::uint32_t));
-        account(queued.capacity(), count, sizeof(unsigned char));
-        account(assigned_weights.capacity(), count, sizeof(std::int64_t));
-        account(assigned_counts.capacity(), count, sizeof(int));
-        account(dff_sums.capacity(), desired_dff, sizeof(std::int64_t));
-        account(profile_next.capacity(), count, sizeof(std::uint32_t));
-        return peak;
-    }
+    StateStore(const StateStore&) = delete;
+    StateStore& operator=(const StateStore&) = delete;
 
     [[nodiscard]] bool prepare_append(std::uint64_t maximum_states,
                                       std::uint64_t other_memory_bytes,
                                       std::uint64_t memory_limit) {
         const std::size_t required = size() + 1U;
-        if (required <= hashes.capacity() &&
-            required <= parents.capacity() &&
-            required <= profile_next.capacity() &&
-            required <= (key_words == 0U ? required
-                                          : keys.capacity() / key_words) &&
-            required <= (dff_count == 0
-                              ? required
-                              : dff_sums.capacity() /
-                                    static_cast<std::size_t>(dff_count))) {
+        if (required <= capacity_states_) {
             return saturated_add(other_memory_bytes, memory_bytes()) <=
                    memory_limit;
         }
         if (required > maximum_states) {
             return false;
         }
-        std::uint64_t desired = hashes.capacity() == 0U
-                                    ? 65'536U
-                                    : static_cast<std::uint64_t>(
-                                          hashes.capacity()) * 2U;
-        desired = std::max(desired, static_cast<std::uint64_t>(required));
-        desired = std::min(desired, maximum_states);
-        if (desired < required ||
-            desired > std::numeric_limits<std::size_t>::max()) {
+        const std::uint64_t remaining = maximum_states - capacity_states_;
+        const std::size_t chunk_capacity = static_cast<std::size_t>(
+            std::min<std::uint64_t>(kChunkStates, remaining));
+        if (chunk_capacity == 0U) {
             return false;
         }
-        std::size_t count = static_cast<std::size_t>(desired);
-        while (count > required &&
-               saturated_add(other_memory_bytes, reserve_peak_bytes(count)) >
-                   memory_limit) {
-            count = required + (count - required) / 2U;
+        if ((key_words != 0U &&
+             chunk_capacity >
+                 std::numeric_limits<std::size_t>::max() / key_words) ||
+            (dff_count > 0 &&
+             chunk_capacity >
+                 std::numeric_limits<std::size_t>::max() /
+                     static_cast<std::size_t>(dff_count))) {
+            return false;
         }
-        if (saturated_add(other_memory_bytes, reserve_peak_bytes(count)) >
-            memory_limit) {
+        const std::uint64_t chunk_bytes =
+            chunk_memory_bytes(chunk_capacity);
+        const std::uint64_t required_memory = saturated_add(
+            other_memory_bytes,
+            saturated_add(memory_bytes(), chunk_bytes));
+        if (required_memory > memory_limit) {
             return false;
         }
         try {
-            reserve(count);
+            chunks_.push_back(std::make_unique<Chunk>(
+                chunk_capacity, key_words,
+                static_cast<std::size_t>(dff_count)));
         } catch (const std::bad_alloc&) {
             return false;
         } catch (const std::length_error&) {
             return false;
         }
+        capacity_states_ += chunk_capacity;
+        refresh_memory_bytes();
         return saturated_add(other_memory_bytes, memory_bytes()) <=
                memory_limit;
     }
 
-    [[nodiscard]] std::size_t size() const noexcept { return hashes.size(); }
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
 
     [[nodiscard]] const std::uint64_t* key(std::uint32_t state) const noexcept {
-        return keys.data() + static_cast<std::size_t>(state) * key_words;
+        const std::size_t index = static_cast<std::size_t>(state);
+        const Chunk& chunk = *chunks_[index >> kChunkShift];
+        return chunk.keys.get() + (index & kChunkMask) * key_words;
     }
 
     [[nodiscard]] std::uint64_t* mutable_key(std::uint32_t state) noexcept {
-        return keys.data() + static_cast<std::size_t>(state) * key_words;
+        const std::size_t index = static_cast<std::size_t>(state);
+        Chunk& chunk = *chunks_[index >> kChunkShift];
+        return chunk.keys.get() + (index & kChunkMask) * key_words;
     }
 
     [[nodiscard]] const std::int64_t* dff(std::uint32_t state) const noexcept {
-        return dff_sums.data() + static_cast<std::size_t>(state) * dff_count;
+        if (dff_count == 0) {
+            return nullptr;
+        }
+        const std::size_t index = static_cast<std::size_t>(state);
+        const Chunk& chunk = *chunks_[index >> kChunkShift];
+        return chunk.dff_sums.get() +
+            (index & kChunkMask) * static_cast<std::size_t>(dff_count);
     }
 
     [[nodiscard]] std::uint32_t append(const std::uint64_t* state_key,
@@ -1282,19 +1313,28 @@ struct StateStore {
             throw std::overflow_error("BBR state identifier overflow");
         }
         const std::uint32_t state = static_cast<std::uint32_t>(size());
-        keys.insert(keys.end(), state_key, state_key + key_words);
-        hashes.push_back(hash);
-        assigned_hashes.push_back(assigned_hash);
-        parents.push_back(parent);
-        depths.push_back(depth);
-        bounds.push_back(bound);
-        versions.push_back(1U);
-        queued.push_back(1U);
-        assigned_weights.push_back(assigned_weight);
-        assigned_counts.push_back(assigned_count);
-        dff_sums.insert(dff_sums.end(), transformed_sums,
-                        transformed_sums + dff_count);
-        profile_next.push_back(kInvalidState);
+        const std::size_t index = static_cast<std::size_t>(state);
+        Chunk& chunk = *chunks_[index >> kChunkShift];
+        const std::size_t offset = index & kChunkMask;
+        std::copy(state_key, state_key + key_words,
+                  chunk.keys.get() + offset * key_words);
+        chunk.hashes[offset] = hash;
+        chunk.assigned_hashes[offset] = assigned_hash;
+        chunk.parents[offset] = parent;
+        chunk.depths[offset] = depth;
+        chunk.bounds[offset] = bound;
+        chunk.versions[offset] = 1U;
+        chunk.queued[offset] = 1U;
+        chunk.assigned_weights[offset] = assigned_weight;
+        chunk.assigned_counts[offset] = assigned_count;
+        if (dff_count > 0) {
+            std::copy(
+                transformed_sums, transformed_sums + dff_count,
+                chunk.dff_sums.get() +
+                    offset * static_cast<std::size_t>(dff_count));
+        }
+        chunk.profile_next[offset] = kInvalidState;
+        ++size_;
         return state;
     }
 
@@ -1303,42 +1343,49 @@ struct StateStore {
     }
 
 private:
+    [[nodiscard]] std::uint64_t chunk_memory_bytes(
+        std::size_t count) const noexcept {
+        const std::size_t scalar_bytes =
+            2U * sizeof(std::uint64_t) +
+            3U * sizeof(std::uint32_t) +
+            3U * sizeof(int) + sizeof(unsigned char) +
+            sizeof(std::int64_t);
+        std::uint64_t per_state = saturated_multiply(
+            key_words, sizeof(std::uint64_t));
+        per_state = saturated_add(
+            per_state,
+            saturated_multiply(static_cast<std::size_t>(dff_count),
+                               sizeof(std::int64_t)));
+        per_state = saturated_add(per_state, scalar_bytes);
+        return saturated_multiply(count, per_state);
+    }
+
     void refresh_memory_bytes() noexcept {
-        std::uint64_t bytes = 0;
-        const auto add = [&](std::uint64_t amount) {
-            bytes = saturated_add(bytes, amount);
-        };
-        add(vector_memory_bytes(keys));
-        add(vector_memory_bytes(hashes));
-        add(vector_memory_bytes(assigned_hashes));
-        add(vector_memory_bytes(parents));
-        add(vector_memory_bytes(depths));
-        add(vector_memory_bytes(bounds));
-        add(vector_memory_bytes(versions));
-        add(vector_memory_bytes(queued));
-        add(vector_memory_bytes(assigned_weights));
-        add(vector_memory_bytes(assigned_counts));
-        add(vector_memory_bytes(dff_sums));
-        add(vector_memory_bytes(profile_next));
-        memory_bytes_cached = bytes;
+        memory_bytes_cached = vector_memory_bytes(chunks_);
+        for (const auto& chunk : chunks_) {
+            memory_bytes_cached = saturated_add(
+                memory_bytes_cached,
+                saturated_add(sizeof(Chunk),
+                              chunk_memory_bytes(chunk->capacity)));
+        }
     }
 
 public:
-
+    Field<std::uint64_t, &Chunk::hashes> hashes;
+    Field<std::uint64_t, &Chunk::assigned_hashes> assigned_hashes;
+    Field<std::uint32_t, &Chunk::parents> parents;
+    Field<int, &Chunk::depths> depths;
+    Field<int, &Chunk::bounds> bounds;
+    Field<std::uint32_t, &Chunk::versions> versions;
+    Field<unsigned char, &Chunk::queued> queued;
+    Field<std::int64_t, &Chunk::assigned_weights> assigned_weights;
+    Field<int, &Chunk::assigned_counts> assigned_counts;
+    Field<std::uint32_t, &Chunk::profile_next> profile_next;
     std::size_t key_words = 0;
     int dff_count = 0;
-    std::vector<std::uint64_t> keys;
-    std::vector<std::uint64_t> hashes;
-    std::vector<std::uint64_t> assigned_hashes;
-    std::vector<std::uint32_t> parents;
-    std::vector<int> depths;
-    std::vector<int> bounds;
-    std::vector<std::uint32_t> versions;
-    std::vector<unsigned char> queued;
-    std::vector<std::int64_t> assigned_weights;
-    std::vector<int> assigned_counts;
-    std::vector<std::int64_t> dff_sums;
-    std::vector<std::uint32_t> profile_next;
+    std::size_t size_ = 0U;
+    std::size_t capacity_states_ = 0U;
+    std::vector<std::unique_ptr<Chunk>> chunks_;
     std::uint64_t memory_bytes_cached = 0;
 };
 
@@ -1574,13 +1621,12 @@ struct QueueEntry {
 }
 
 struct BbrTask {
+    // The key is the sole exact-state payload. Workers rebuild weights, hashes,
+    // counts, and DFF residuals instead of trusting redundant task metadata.
     std::vector<std::uint64_t> key;
-    std::vector<std::int64_t> dff_sums;
     Assignment prefix_assignment;
     std::uint64_t hash = 0;
-    std::uint64_t assigned_hash = 0;
     std::uint64_t estimated_work = 1;
-    std::int64_t assigned_weight = 0;
     int assigned_count = 0;
     int depth = 0;
     int bound = 0;
@@ -1676,6 +1722,12 @@ private:
     std::atomic<std::uint64_t> peak_{0U};
 };
 
+enum class SharedRememberResult : unsigned char {
+    kRecorded,
+    kDominated,
+    kUnavailable,
+};
+
 template <class T>
 class BudgetAllocator {
 public:
@@ -1720,7 +1772,7 @@ private:
 
 class SharedStateMemory {
 public:
-    static constexpr std::size_t kShardCount = 64U;
+    static constexpr std::size_t kShardCount = 256U;
 
     SharedStateMemory(std::size_t key_words,
                       std::size_t assigned_blocks,
@@ -1749,6 +1801,17 @@ public:
                record->best_depth.load(std::memory_order_relaxed) <= depth;
     }
 
+    [[nodiscard]] bool exact_dominated_at_smaller_depth(
+        const std::uint64_t* key,
+        std::uint64_t hash,
+        int depth) const {
+        ExactShard& shard = *exact_[shard_index(hash)];
+        std::lock_guard lock(shard.mutex);
+        SharedRecord* record = shard.find(key, key_words_, hash);
+        return record != nullptr &&
+               record->best_depth.load(std::memory_order_relaxed) < depth;
+    }
+
     [[nodiscard]] bool profile_dominated(const std::uint64_t* key,
                                          std::uint64_t assigned_hash,
                                          int depth) const {
@@ -1771,35 +1834,35 @@ public:
         return false;
     }
 
-    [[nodiscard]] bool remember(const std::uint64_t* key,
-                                std::uint64_t hash,
-                                std::uint64_t assigned_hash,
-                                int depth) {
+    [[nodiscard]] SharedRememberResult remember(
+        const std::uint64_t* key,
+        std::uint64_t hash,
+        std::uint64_t assigned_hash,
+        int depth) {
         ExactShard& exact_shard = *exact_[shard_index(hash)];
         SharedRecord* record = nullptr;
         {
             std::lock_guard lock(exact_shard.mutex);
             record = exact_shard.find(key, key_words_, hash);
             if (record != nullptr) {
-                int remembered = record->best_depth.load(
+                const int remembered = record->best_depth.load(
                     std::memory_order_relaxed);
-                while (depth < remembered &&
-                       !record->best_depth.compare_exchange_weak(
-                           remembered, depth, std::memory_order_relaxed,
-                           std::memory_order_relaxed)) {
+                if (remembered <= depth) {
+                    return SharedRememberResult::kDominated;
                 }
-                return true;
+                record->best_depth.store(depth, std::memory_order_relaxed);
+                return SharedRememberResult::kRecorded;
             }
             try {
                 if (!exact_shard.prepare_insert()) {
-                    return false;
+                    return SharedRememberResult::kUnavailable;
                 }
                 exact_shard.records.emplace_back(
                     &budget_, key, key_words_, hash, assigned_hash, depth);
                 record = &exact_shard.records.back();
                 exact_shard.insert_unchecked(record);
             } catch (const std::bad_alloc&) {
-                return false;
+                return SharedRememberResult::kUnavailable;
             }
         }
 
@@ -1809,14 +1872,14 @@ public:
             try {
                 std::lock_guard lock(profile_shard.mutex);
                 if (!profile_shard.insert(record, assigned_blocks_)) {
-                    return false;
+                    return SharedRememberResult::kRecorded;
                 }
             } catch (const std::bad_alloc&) {
-                return false;
+                return SharedRememberResult::kRecorded;
             }
         }
         state_count_.fetch_add(1U, std::memory_order_relaxed);
-        return true;
+        return SharedRememberResult::kRecorded;
     }
 
     [[nodiscard]] std::uint64_t memory_bytes() const noexcept {
@@ -2053,15 +2116,17 @@ public:
         }
     }
 
-    [[nodiscard]] bool remember(const std::uint64_t* key,
-                                std::uint64_t hash,
-                                std::uint64_t assigned_hash,
-                                int depth) noexcept {
-        if (state_memory_.remember(key, hash, assigned_hash, depth)) {
-            return true;
+    [[nodiscard]] SharedRememberResult remember(
+        const std::uint64_t* key,
+        std::uint64_t hash,
+        std::uint64_t assigned_hash,
+        int depth) noexcept {
+        const SharedRememberResult result =
+            state_memory_.remember(key, hash, assigned_hash, depth);
+        if (result == SharedRememberResult::kUnavailable) {
+            shared_memory_saturated_.store(true, std::memory_order_release);
         }
-        shared_memory_saturated_.store(true, std::memory_order_release);
-        return true;
+        return result;
     }
 
     [[nodiscard]] int incumbent_bound() const noexcept {
@@ -2581,6 +2646,10 @@ public:
         std::atomic<int>* rebalance_requests,
         std::size_t maximum_rebalance_tasks) {
         const auto search_start = Clock::now();
+        const std::uint64_t rebalance_start_expanded =
+            statistics_.states_expanded;
+        const std::uint64_t rebalance_start_load_nodes =
+            statistics_.load_search_nodes;
         BbrSplitResult rebalance_result;
         try {
             if (deadline_.expired()) {
@@ -2610,27 +2679,48 @@ public:
                     const bool generalized_precedence =
                         !precomputed_.salbp_semantics &&
                         !precomputed_.bppp_semantics;
-                    const std::uint64_t minimum_rebalance_frontier =
-                        generalized_precedence ? 3U : 8U;
-                    bool rebalance_requested = false;
+                    constexpr std::uint64_t kStartupStateBudget = 65536U;
+                    const bool startup_diversification =
+                        parallel_control_ != nullptr &&
+                        parallel_control_->states() < kStartupStateBudget;
+                    const std::uint64_t minimum_states_per_export =
+                        startup_diversification ? 1024U : 4096U;
+                    const std::uint64_t minimum_load_nodes_per_export =
+                        startup_diversification ? 262144U : 1048576U;
+                    const bool export_grain_reached =
+                        statistics_.states_expanded -
+                                rebalance_start_expanded >=
+                            minimum_states_per_export ||
+                        statistics_.load_search_nodes -
+                                rebalance_start_load_nodes >=
+                            minimum_load_nodes_per_export;
+                    std::size_t export_limit = 0U;
                     if (rebalance_requests != nullptr &&
-                        open_states_ >= minimum_rebalance_frontier) {
+                        export_grain_reached && open_states_ > 1U) {
+                        std::size_t export_capacity =
+                            static_cast<std::size_t>(open_states_ / 2U);
+                        export_capacity = std::min(
+                            export_capacity, maximum_rebalance_tasks);
+                        if (generalized_precedence) {
+                            export_capacity = std::min<std::size_t>(
+                                export_capacity, 2U);
+                        }
                         int requests = rebalance_requests->load(
                             std::memory_order_relaxed);
-                        while (requests > 0 && !rebalance_requested) {
-                            rebalance_requested =
-                                rebalance_requests->compare_exchange_weak(
-                                    requests, requests - 1,
+                        while (requests > 0 && export_limit == 0U &&
+                               export_capacity > 0U) {
+                            const int claimed = std::min(
+                                requests,
+                                static_cast<int>(export_capacity));
+                            if (rebalance_requests->compare_exchange_weak(
+                                    requests, requests - claimed,
                                     std::memory_order_acq_rel,
-                                    std::memory_order_relaxed);
+                                    std::memory_order_relaxed)) {
+                                export_limit = static_cast<std::size_t>(claimed);
+                            }
                         }
                     }
-                    if (rebalance_requested) {
-                        const std::size_t export_limit =
-                            generalized_precedence
-                                ? std::min<std::size_t>(
-                                      maximum_rebalance_tasks, 2U)
-                                : maximum_rebalance_tasks;
+                    if (export_limit > 0U) {
                         rebalance_result.tasks = extract_open_tasks(
                             export_limit);
                         if (!rebalance_result.tasks.empty()) {
@@ -2742,20 +2832,16 @@ private:
         return true;
     }
 
-    [[nodiscard]] bool publish_shared_state(
+    [[nodiscard]] SharedRememberResult publish_shared_state(
         const std::uint64_t* key,
         std::uint64_t hash,
         std::uint64_t assigned_hash,
         int depth) {
         if (parallel_control_ == nullptr) {
-            return true;
+            return SharedRememberResult::kRecorded;
         }
-        if (parallel_control_->remember(key, hash, assigned_hash, depth)) {
-            return true;
-        }
-        memory_limited_ = true;
-        stop_ = true;
-        return false;
+        return parallel_control_->remember(
+            key, hash, assigned_hash, depth);
     }
 
     [[nodiscard]] static std::uint64_t checked_memory_limit(
@@ -2785,20 +2871,40 @@ private:
         std::uint64_t root_assigned_hash = 0;
         const std::int64_t* root_dff = precomputed_.dff_total.data();
         if (seeded) {
-            if (seed_task_->key.size() != precomputed_.key_words ||
-                seed_task_->dff_sums.size() !=
-                    precomputed_.dff_capacity.size()) {
+            if (seed_task_->key.size() != precomputed_.key_words) {
                 throw std::invalid_argument("parallel BBR seed width mismatch");
             }
             std::copy(seed_task_->key.begin(), seed_task_->key.end(),
                       child_key_.begin());
             root_depth = seed_task_->depth;
             root_bound = seed_task_->bound;
-            root_assigned_weight = seed_task_->assigned_weight;
-            root_assigned_count = seed_task_->assigned_count;
-            root_hash = seed_task_->hash;
-            root_assigned_hash = seed_task_->assigned_hash;
-            root_dff = seed_task_->dff_sums.data();
+            child_dff_sums_ = precomputed_.dff_total;
+            precomputed_.for_each_set_bit(child_key_.data(), [&](int item) {
+                ++root_assigned_count;
+                root_assigned_weight +=
+                    instance_.items[static_cast<std::size_t>(item)].weight;
+                const std::int64_t* item_dff =
+                    precomputed_.transformed_weights_for_item(item);
+                for (std::size_t transform = 0;
+                     transform < child_dff_sums_.size(); ++transform) {
+                    child_dff_sums_[transform] -= item_dff[transform];
+                }
+            });
+            root_assigned_hash =
+                precomputed_.assigned_set_hash(child_key_.data());
+            root_hash = precomputed_.salbp_semantics
+                ? root_assigned_hash
+                : hash_words(child_key_.data(), precomputed_.key_words);
+            root_dff = child_dff_sums_.data();
+            for (int item = 0; item < precomputed_.n; ++item) {
+                const int bin = prefix_assignment_.bin_of_item[
+                    static_cast<std::size_t>(item)];
+                const bool assigned = bit_is_set(child_key_.data(), item);
+                if (assigned != (bin >= 0 && bin < root_depth)) {
+                    throw std::logic_error(
+                        "parallel BBR seed assignment does not match its key");
+                }
+            }
         } else {
             std::fill(child_key_.begin(), child_key_.end(), 0U);
             root_bound = compute_lower_bound(
@@ -2831,10 +2937,9 @@ private:
         }
         if (!seeded) {
             ++statistics_.states_created;
-            if (!publish_shared_state(child_key_.data(), root_hash,
-                                      root_assigned_hash, root_depth)) {
-                return;
-            }
+            static_cast<void>(publish_shared_state(
+                child_key_.data(), root_hash,
+                root_assigned_hash, root_depth));
         }
         open_states_ = 1U;
         statistics_.peak_open_states = 1U;
@@ -3013,6 +3118,20 @@ private:
     }
 
     void expand_state(std::uint32_t state) {
+        const std::size_t state_index = static_cast<std::size_t>(state);
+        if (parallel_control_ != nullptr &&
+            parallel_control_->state_memory()
+                .exact_dominated_at_smaller_depth(
+                    store_.key(state), store_.hashes[state_index],
+                    store_.depths[state_index])) {
+            if (store_.queued[state_index] != 0U) {
+                store_.queued[state_index] = 0U;
+                --open_states_;
+            }
+            ++statistics_.exact_memory_prunes;
+            ++statistics_.shared_exact_memory_prunes;
+            return;
+        }
         current_state_ = state;
         current_version_ = store_.versions[static_cast<std::size_t>(state)];
         current_depth_ = store_.depths[static_cast<std::size_t>(state)];
@@ -3026,9 +3145,11 @@ private:
         std::copy(store_.key(state),
                   store_.key(state) + precomputed_.key_words,
                   current_key_.begin());
-        std::copy(store_.dff(state),
-                  store_.dff(state) + precomputed_.dff_capacity.size(),
-                  current_dff_sums_.begin());
+        if (!current_dff_sums_.empty()) {
+            std::copy(store_.dff(state),
+                      store_.dff(state) + current_dff_sums_.size(),
+                      current_dff_sums_.begin());
+        }
 
         ++statistics_.states_expanded;
         prepare_load_enumeration();
@@ -3053,7 +3174,56 @@ private:
         return 0;
     }
 
+    [[nodiscard]] int compute_dff_lower_bound(
+        const std::uint64_t* key,
+        std::int64_t numerator,
+        std::size_t transform) const {
+        const std::int64_t denominator =
+            precomputed_.dff_capacity[transform];
+        if (numerator < 0 || denominator <= 0) {
+            std::int64_t expected_child =
+                precomputed_.dff_total[transform];
+            precomputed_.for_each_set_bit(key, [&](int item) {
+                expected_child -=
+                    precomputed_.transformed_weights_for_item(item)[transform];
+            });
+            std::int64_t expected_current =
+                precomputed_.dff_total[transform];
+            std::int64_t expected_load = 0;
+            precomputed_.for_each_set_bit(
+                current_key_.data(), [&](int item) {
+                    expected_current -=
+                        precomputed_.transformed_weights_for_item(
+                            item)[transform];
+                });
+            precomputed_.for_each_set_bit(
+                load_mask_.data(), [&](int item) {
+                    expected_load +=
+                        precomputed_.transformed_weights_for_item(
+                            item)[transform];
+                });
+            throw std::logic_error(
+                "invalid BBR DFF residual"
+                " (transform=" + std::to_string(transform) +
+                ", capacity=" + std::to_string(denominator) +
+                ", actual=" + std::to_string(numerator) +
+                ", expected_child=" + std::to_string(expected_child) +
+                ", current=" +
+                std::to_string(current_dff_sums_[transform]) +
+                ", expected_current=" +
+                std::to_string(expected_current) +
+                ", load=" + std::to_string(load_dff_sums_[transform]) +
+                ", expected_load=" + std::to_string(expected_load) +
+                ", depth=" + std::to_string(current_depth_ + 1) +
+                ", assigned_count=" +
+                std::to_string(current_assigned_count_ +
+                               current_load_count_) + ")");
+        }
+        return static_cast<int>((numerator + denominator - 1) / denominator);
+    }
+
     [[nodiscard]] int compute_cheap_lower_bound(
+        const std::uint64_t* key,
         int depth,
         std::int64_t assigned_weight,
         const std::int64_t* dff_sums) {
@@ -3067,8 +3237,8 @@ private:
              transform < precomputed_.dff_capacity.size(); ++transform) {
             bin_packing_bound = std::max(
                 bin_packing_bound,
-                ceil_div_i64(dff_sums[transform],
-                             precomputed_.dff_capacity[transform]));
+                compute_dff_lower_bound(
+                    key, dff_sums[transform], transform));
         }
         int lower_bound = std::max(initial_lower_bound_,
                                    depth + bin_packing_bound);
@@ -3396,7 +3566,7 @@ private:
         int assigned_count,
         const std::int64_t* dff_sums) {
         int preliminary = compute_cheap_lower_bound(
-            depth, assigned_weight, dff_sums);
+            key, depth, assigned_weight, dff_sums);
         if (preliminary >= upper_bound_ ||
             assigned_weight == instance_.total_weight) {
             return preliminary;
@@ -3864,7 +4034,8 @@ private:
             return;
         }
         int child_bound = compute_cheap_lower_bound(
-            child_depth, child_assigned_weight, child_dff_sums_.data());
+            child_key_.data(), child_depth, child_assigned_weight,
+            child_dff_sums_.data());
         if (child_bound >= upper_bound_) {
             ++statistics_.bound_prunes;
             return;
@@ -3952,9 +4123,16 @@ private:
                 return;
             }
             push_state_unchecked(existing);
-            if (!publish_shared_state(
-                    child_key_.data(), child_hash, child_assigned_hash,
-                    child_depth)) {
+            const SharedRememberResult shared_result = publish_shared_state(
+                child_key_.data(), child_hash, child_assigned_hash,
+                child_depth);
+            if (shared_result == SharedRememberResult::kDominated) {
+                if (store_.queued[index] != 0U) {
+                    store_.queued[index] = 0U;
+                    --open_states_;
+                }
+                ++statistics_.exact_memory_prunes;
+                ++statistics_.shared_exact_memory_prunes;
                 return;
             }
             ++statistics_.states_reopened;
@@ -4006,8 +4184,13 @@ private:
         statistics_.peak_open_states =
             std::max(statistics_.peak_open_states, open_states_);
         push_state_unchecked(child);
-        if (!publish_shared_state(child_key_.data(), child_hash,
-                                  child_assigned_hash, child_depth)) {
+        const SharedRememberResult shared_result = publish_shared_state(
+            child_key_.data(), child_hash, child_assigned_hash, child_depth);
+        if (shared_result == SharedRememberResult::kDominated) {
+            store_.queued[static_cast<std::size_t>(child)] = 0U;
+            --open_states_;
+            ++statistics_.exact_memory_prunes;
+            ++statistics_.shared_exact_memory_prunes;
             return;
         }
         if (memory_lease_expanded_) {
@@ -4183,14 +4366,14 @@ private:
         BbrTask task;
         task.key.assign(store_.key(state),
                         store_.key(state) + precomputed_.key_words);
-        task.dff_sums.assign(
-            store_.dff(state),
-            store_.dff(state) + precomputed_.dff_capacity.size());
         task.prefix_assignment = reconstruct_state(state);
-        task.hash = store_.hashes[index];
-        task.assigned_hash = store_.assigned_hashes[index];
-        task.assigned_weight = store_.assigned_weights[index];
-        task.assigned_count = store_.assigned_counts[index];
+        task.assigned_count =
+            mask_popcount(task.key.data(), precomputed_.blocks);
+        const std::uint64_t assigned_hash =
+            precomputed_.assigned_set_hash(task.key.data());
+        task.hash = precomputed_.salbp_semantics
+            ? assigned_hash
+            : hash_words(task.key.data(), precomputed_.key_words);
         task.depth = store_.depths[index];
         task.bound = store_.bounds[index];
         task.estimated_work = estimate_task_work(
@@ -4713,7 +4896,6 @@ struct ParallelWorkerQueue {
     const BbrTask& task) noexcept {
     std::uint64_t bytes = sizeof(BbrTask);
     bytes = saturated_add(bytes, vector_memory_bytes(task.key));
-    bytes = saturated_add(bytes, vector_memory_bytes(task.dff_sums));
     return saturated_add(
         bytes, vector_memory_bytes(task.prefix_assignment.bin_of_item));
 }
@@ -4782,16 +4964,12 @@ struct ParallelWorkerQueue {
         config.bbr_memory_limit_mb * kMegabyte;
     const std::uint64_t precomputed_memory = saturated_add(
         precomputed->memory_bytes(), kMegabyte);
-    constexpr std::uint64_t initial_tasks_per_worker = 32U;
-    constexpr std::uint64_t maximum_generalized_initial_tasks = 128U;
     const bool generalized_precedence =
         !precomputed->salbp_semantics && !precomputed->bppp_semantics;
-    std::uint64_t initial_task_target =
-        static_cast<std::uint64_t>(thread_count) * initial_tasks_per_worker;
-    if (generalized_precedence) {
-        initial_task_target = std::min(
-            initial_task_target, maximum_generalized_initial_tasks);
-    }
+    // Seed at most one high-level subtree per worker.  Further parallelism is
+    // created only by bounded subtree donations from active owners.
+    const std::uint64_t initial_task_target = std::min<std::uint64_t>(
+        static_cast<std::uint64_t>(thread_count), 8U);
     const std::size_t target_tasks = static_cast<std::size_t>(
         std::min(config.bbr_state_limit, initial_task_target));
     const std::uint64_t estimated_task_bytes = std::max<std::uint64_t>(
@@ -4800,7 +4978,6 @@ struct ParallelWorkerQueue {
             saturated_multiply(
                 saturated_multiply(target_tasks, 8U),
                 precomputed->key_words * sizeof(std::uint64_t) +
-                    precomputed->dff_capacity.size() * sizeof(std::int64_t) +
                     static_cast<std::size_t>(precomputed->n) * sizeof(int) +
                     256U),
             kMegabyte));
@@ -4920,6 +5097,13 @@ struct ParallelWorkerQueue {
     }
 
     const std::size_t initial_task_count = split.tasks.size();
+    std::uint64_t initial_work_min =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t initial_work_max = 0U;
+    for (const BbrTask& task : split.tasks) {
+        initial_work_min = std::min(initial_work_min, task.estimated_work);
+        initial_work_max = std::max(initial_work_max, task.estimated_work);
+    }
     std::vector<std::unique_ptr<ParallelWorkerQueue>> queues;
     queues.reserve(static_cast<std::size_t>(thread_count));
     for (int worker = 0; worker < thread_count; ++worker) {
@@ -4959,10 +5143,12 @@ struct ParallelWorkerQueue {
     Config worker_config = config;
     worker_config.bbr_memory_limit_mb = worker_memory_ceiling_mb;
     const std::size_t maximum_rebalance_tasks = std::max<std::size_t>(
-        8U, static_cast<std::size_t>(thread_count) * 4U);
+        1U, static_cast<std::size_t>(thread_count - 1));
     std::vector<BbrStatistics> worker_statistics(
         static_cast<std::size_t>(thread_count));
     std::vector<std::uint64_t> worker_peak_open(
+        static_cast<std::size_t>(thread_count), 0U);
+    std::vector<std::uint64_t> worker_completed_tasks(
         static_cast<std::size_t>(thread_count), 0U);
     std::vector<std::exception_ptr> worker_exceptions(
         static_cast<std::size_t>(thread_count));
@@ -5211,6 +5397,8 @@ struct ParallelWorkerQueue {
                             (task_result.optimal ||
                              control.incumbent_bound() <=
                                  initial_lower_bound)) {
+                            ++worker_completed_tasks[
+                                static_cast<std::size_t>(worker)];
                             completed_tasks.fetch_add(
                                 1U, std::memory_order_relaxed);
                             outstanding_tasks.fetch_sub(
@@ -5291,12 +5479,39 @@ struct ParallelWorkerQueue {
 
     BbrStatistics combined = split.result.statistics;
     std::uint64_t summed_worker_peak_open = 0U;
+    combined.parallel_worker_tasks_min =
+        std::numeric_limits<std::uint64_t>::max();
+    combined.parallel_worker_expanded_min =
+        std::numeric_limits<std::uint64_t>::max();
+    combined.parallel_worker_busy_seconds_min =
+        std::numeric_limits<double>::infinity();
     for (int worker = 0; worker < thread_count; ++worker) {
+        const std::size_t worker_index = static_cast<std::size_t>(worker);
         add_phase_counters(
-            combined, worker_statistics[static_cast<std::size_t>(worker)]);
+            combined, worker_statistics[worker_index]);
         summed_worker_peak_open = saturated_add(
             summed_worker_peak_open,
-            worker_peak_open[static_cast<std::size_t>(worker)]);
+            worker_peak_open[worker_index]);
+        combined.parallel_worker_tasks_min = std::min(
+            combined.parallel_worker_tasks_min,
+            worker_completed_tasks[worker_index]);
+        combined.parallel_worker_tasks_max = std::max(
+            combined.parallel_worker_tasks_max,
+            worker_completed_tasks[worker_index]);
+        combined.parallel_worker_expanded_min = std::min(
+            combined.parallel_worker_expanded_min,
+            worker_statistics[worker_index].states_expanded);
+        combined.parallel_worker_expanded_max = std::max(
+            combined.parallel_worker_expanded_max,
+            worker_statistics[worker_index].states_expanded);
+        combined.parallel_worker_busy_seconds_sum +=
+            worker_statistics[worker_index].search_seconds;
+        combined.parallel_worker_busy_seconds_min = std::min(
+            combined.parallel_worker_busy_seconds_min,
+            worker_statistics[worker_index].search_seconds);
+        combined.parallel_worker_busy_seconds_max = std::max(
+            combined.parallel_worker_busy_seconds_max,
+            worker_statistics[worker_index].search_seconds);
     }
     combined.parallel = true;
     combined.shared_memory_saturated =
@@ -5309,6 +5524,8 @@ struct ParallelWorkerQueue {
         std::memory_order_relaxed);
     combined.parallel_tasks_stolen = stolen_tasks.load(
         std::memory_order_relaxed);
+    combined.parallel_initial_work_min = initial_work_min;
+    combined.parallel_initial_work_max = initial_work_max;
     combined.parallel_shared_peak_memory_bytes =
         shared_memory->peak_memory_bytes();
     combined.parallel_worker_peak_memory_bytes =

@@ -33,11 +33,6 @@ int main(int argc, char** argv) {
             options.problem, options.time_limit_seconds,
             options.memory_limit_mb, options.threads);
         const precpack::OutputLock output_lock(options.output_directory);
-        const precpack::Instance instance =
-            precpack::read_instance(options.instance_path, options.graph_path,
-                                    precpack::to_string(options.problem));
-        const precpack::Solution solution = precpack::solve(instance, config);
-
         const std::string key = precpack::make_instance_key(
             options.instance_path, options.graph_path);
         const std::filesystem::path assignment_path =
@@ -50,6 +45,12 @@ int main(int argc, char** argv) {
              "_Results.csv");
         const std::filesystem::path assignment_reference =
             assignment_path.lexically_relative(options.output_directory);
+        precpack::require_unused_instance_key(result_path, key);
+
+        const precpack::Instance instance =
+            precpack::read_instance(options.instance_path, options.graph_path,
+                                    precpack::to_string(options.problem));
+        const precpack::Solution solution = precpack::solve(instance, config);
         precpack::write_assignment(assignment_path, instance, solution);
         precpack::append_result_csv(
             result_path, key, options.instance_path, options.graph_path,

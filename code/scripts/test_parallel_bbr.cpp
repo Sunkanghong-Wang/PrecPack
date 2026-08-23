@@ -160,6 +160,71 @@ void test_generalized_parallel_exactness() {
     }
 }
 
+void test_complete_dff_parallel_exactness() {
+    std::vector<int> weights;
+    std::vector<precpack::Arc> arcs;
+    weights.reserve(32U);
+    for (int item = 0; item < 32; ++item) {
+        weights.push_back(100 + (137 * item + 53) % 500);
+        for (int successor = item + 1; successor < 32; ++successor) {
+            if ((17 * item + 31 * successor + 7) % 13 == 0) {
+                arcs.push_back({item, successor, 1});
+            }
+        }
+    }
+    const precpack::Instance instance =
+        make_instance(weights, 1000, std::move(arcs));
+    precpack::Assignment incumbent;
+    incumbent.bin_of_item.resize(32U);
+    std::iota(incumbent.bin_of_item.begin(), incumbent.bin_of_item.end(), 0);
+    incumbent.bin_count = 32;
+    const precpack::PreparedInstance prepared =
+        make_prepared(instance, incumbent);
+
+    precpack::Config serial_config = base_config();
+    serial_config.bbr_enable_complete_dff = true;
+    serial_config.bbr_dff_transform_limit = 15;
+    serial_config.bbr_memory_limit_mb = 256;
+    serial_config.threads = 1;
+    precpack::Deadline serial_deadline(10.0);
+    const precpack::BbrResult serial = precpack::run_branch_bound_remember(
+        prepared, 3, serial_config, serial_deadline);
+
+    std::string diagnostic;
+    for (const int threads : {2, 4, 8}) {
+        precpack::Config parallel_config = serial_config;
+        parallel_config.threads = threads;
+        precpack::Deadline parallel_deadline(10.0);
+        const precpack::BbrResult parallel =
+            precpack::run_branch_bound_remember(
+                prepared, 3, parallel_config, parallel_deadline);
+        require(serial.optimal && parallel.optimal &&
+                    serial.incumbent.bin_count ==
+                        parallel.incumbent.bin_count &&
+                    precpack::check_assignment(instance, parallel.incumbent,
+                                                &diagnostic),
+                "complete-DFF parallel BBR disagreed with the serial result "
+                "at " + std::to_string(threads) + " threads: " + diagnostic);
+        require(parallel.statistics.complete_dff_enabled &&
+                    parallel.statistics.dff_transform_count > 0U &&
+                    parallel.statistics.parallel_tasks_generated > 1U &&
+                    parallel.statistics.parallel_tasks_completed ==
+                        parallel.statistics.parallel_tasks_generated,
+                "complete-DFF parallel task contract was not exercised at " +
+                    std::to_string(threads) + " threads: transforms=" +
+                    std::to_string(
+                        parallel.statistics.dff_transform_count) +
+                    ", generated=" +
+                    std::to_string(
+                        parallel.statistics.parallel_tasks_generated) +
+                    ", completed=" +
+                    std::to_string(
+                        parallel.statistics.parallel_tasks_completed) +
+                    ", states=" +
+                    std::to_string(parallel.statistics.states_created));
+    }
+}
+
 void test_global_limits() {
     const precpack::Instance instance = make_instance(
         std::vector<int>(12U, 1), 3);
@@ -210,6 +275,7 @@ int main() {
     try {
         test_parallel_exactness();
         test_generalized_parallel_exactness();
+        test_complete_dff_parallel_exactness();
         test_global_limits();
         std::cout << "Parallel BBR tests passed (threads=1,2,4,8).\n";
         return 0;

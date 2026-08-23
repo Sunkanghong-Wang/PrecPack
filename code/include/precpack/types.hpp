@@ -192,6 +192,12 @@ struct BbrStatistics {
     std::uint64_t parallel_shared_peak_memory_bytes = 0;
     std::uint64_t parallel_worker_peak_memory_bytes = 0;
     std::uint64_t parallel_task_memory_bytes = 0;
+    std::uint64_t parallel_worker_tasks_min = 0;
+    std::uint64_t parallel_worker_tasks_max = 0;
+    std::uint64_t parallel_worker_expanded_min = 0;
+    std::uint64_t parallel_worker_expanded_max = 0;
+    std::uint64_t parallel_initial_work_min = 0;
+    std::uint64_t parallel_initial_work_max = 0;
 
     std::uint64_t peak_memory_bytes = 0;
     std::uint64_t state_limit = 0;
@@ -206,6 +212,9 @@ struct BbrStatistics {
     double search_seconds = 0.0;
     double exact_search_seconds = 0.0;
     double parallel_split_seconds = 0.0;
+    double parallel_worker_busy_seconds_sum = 0.0;
+    double parallel_worker_busy_seconds_min = 0.0;
+    double parallel_worker_busy_seconds_max = 0.0;
     double generalized_item_dominance_seconds = 0.0;
     double binlb_seconds = 0.0;
     double binlb_call_time_limit_seconds = 0.0;

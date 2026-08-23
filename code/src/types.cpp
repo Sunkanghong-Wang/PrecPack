@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <limits>
 #include <queue>
 #include <stdexcept>
 #include <tuple>
@@ -13,6 +14,18 @@ namespace {
 [[nodiscard]] std::uint64_t arc_key(int from, int to) noexcept {
     return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(from)) << 32U) |
            static_cast<std::uint32_t>(to);
+}
+
+[[nodiscard]] int checked_path_distance(int lhs, int rhs) {
+    const std::int64_t value =
+        static_cast<std::int64_t>(lhs) + static_cast<std::int64_t>(rhs);
+    constexpr std::int64_t kMaximumSupportedBinIndex =
+        static_cast<std::int64_t>(std::numeric_limits<int>::max()) - 1;
+    if (value > kMaximumSupportedBinIndex) {
+        throw std::invalid_argument(
+            "precedence path exceeds the supported bin-position range");
+    }
+    return static_cast<int>(value);
 }
 
 }
@@ -119,7 +132,9 @@ void Instance::initialize() {
              successor_arcs[static_cast<std::size_t>(current)]) {
             front[static_cast<std::size_t>(next)] =
                 std::max(front[static_cast<std::size_t>(next)],
-                         front[static_cast<std::size_t>(current)] + distance);
+                         checked_path_distance(
+                             front[static_cast<std::size_t>(current)],
+                             distance));
         }
     }
 
@@ -130,7 +145,9 @@ void Instance::initialize() {
              successor_arcs[static_cast<std::size_t>(current)]) {
             back[static_cast<std::size_t>(current)] =
                 std::max(back[static_cast<std::size_t>(current)],
-                         distance + back[static_cast<std::size_t>(next)]);
+                         checked_path_distance(
+                             distance,
+                             back[static_cast<std::size_t>(next)]));
         }
     }
 
@@ -148,7 +165,9 @@ void Instance::initialize() {
                  successor_arcs[static_cast<std::size_t>(current)]) {
                 distance[static_cast<std::size_t>(next)] =
                     std::max(distance[static_cast<std::size_t>(next)],
-                             distance[static_cast<std::size_t>(current)] + arc_distance);
+                             checked_path_distance(
+                                 distance[static_cast<std::size_t>(current)],
+                                 arc_distance));
             }
         }
         for (int target = 0; target < n; ++target) {
@@ -156,6 +175,16 @@ void Instance::initialize() {
                 longest_separation[static_cast<std::size_t>(source) * n + target] =
                     distance[static_cast<std::size_t>(target)];
             }
+        }
+    }
+    for (int item = 0; item < n; ++item) {
+        const std::int64_t required_bin_count =
+            static_cast<std::int64_t>(
+                front[static_cast<std::size_t>(item)]) +
+            back[static_cast<std::size_t>(item)] + 1;
+        if (required_bin_count > std::numeric_limits<int>::max()) {
+            throw std::invalid_argument(
+                "precedence path exceeds the supported bin-position range");
         }
     }
 }

@@ -107,7 +107,7 @@ All implementation and developer-facing tooling lives under `code/`. The compone
 | Reproducible defaults | One fixed production profile per problem; algorithmic ablation switches are not exposed through the public command line. |
 | Optional shared-memory search | The default serial BBR path is preserved; an explicit worker count enables exact shallow-subtree parallelism shared by all three problem profiles. |
 | Portable workflow | CMake definitions and convenience scripts support macOS, Linux, and Windows. |
-| Documented data | Bundled benchmark instances include source attribution, format documentation, and a separate data-rights notice. |
+| Documented data | The included benchmark sets have format and source documentation. |
 
 ## Requirements
 
@@ -164,7 +164,7 @@ Windows Command Prompt:
 code\scripts\build.bat --gurobi off
 ```
 
-The macOS, Linux, and Windows build launchers call CMake directly. They print the CMake configuration, compilation, and test phases, and report a specific error when CMake is unavailable or a phase fails. None of the build or run launchers requires Python.
+The macOS, Linux, and Windows build launchers call CMake directly. They print the CMake configuration, compilation, and test phases, and report a specific error when CMake is unavailable or a phase fails. On macOS, `build.sh` also detects CMake installed with CMake.app, Homebrew, MacPorts, or CLion when it is not on `PATH`. Set `CMAKE_BIN` to an executable path to override automatic detection. None of the build or run launchers requires Python.
 
 Omit `--gurobi off` to use the default `AUTO` detection. To require the optional Gurobi backend, set `GUROBI_HOME` and use `--gurobi on`:
 
@@ -198,7 +198,7 @@ With a standard Windows multi-configuration generator, executables are placed un
 
 ### Command Line
 
-After building, solve one bundled instance from each supported problem:
+After building, solve one included instance from each supported problem:
 
 macOS or Linux:
 
@@ -237,11 +237,13 @@ The same executable provides a sequential, resume-safe batch mode used by the su
 | Batch option | Meaning | Default |
 | --- | --- | --- |
 | `--batch` | Enable sequential batch selection and execution | off |
-| `--input` | Input `.txt` file or directory | complete bundled collection for the problem |
-| `--graph-dir` | BPP-GP `.graph` file or directory | both bundled graph families |
+| `--input` | Input `.txt` file or directory | complete benchmark set for the problem |
+| `--graph-dir` | BPP-GP `.graph` file or directory | both included labeled-graph sets |
 | `--check-only` | Validate the selection and compatible existing output without solving | off |
 
-The deterministic seed is fixed to 1, and the production remembered-state cap is fixed to 60,000,000. In parallel runs this is one global cap, not 60,000,000 states per worker. `--threads -1` uses `std::thread::hardware_concurrency()` and falls back to one worker if the platform cannot report it. A time-, state-, or memory-limited run still writes its validated incumbent and certified lower bound; only `status=OPTIMAL` certifies optimality. Every run appends its metadata and summary statistics to `SALBP-I_Results.csv`, `BPP-P_Results.csv`, or `BPP-GP_Results.csv`, according to the selected problem. The corresponding `.sol` file below `solutions/` contains only the bin assignment, avoiding duplicated data in large benchmark collections.
+The deterministic seed is fixed to 1, and the production remembered-state cap is fixed to 60,000,000. In parallel runs this is one global cap, not 60,000,000 states per worker. `--threads -1` uses `std::thread::hardware_concurrency()` and falls back to one worker if the platform cannot report it. A time-, state-, or memory-limited run still writes its validated incumbent and certified lower bound; only `status=OPTIMAL` certifies optimality. Every run appends its metadata and summary statistics to `SALBP-I_Results.csv`, `BPP-P_Results.csv`, or `BPP-GP_Results.csv`, according to the selected problem. The corresponding `.sol` file below `solutions/` contains only the bin assignment, avoiding duplicated data in large benchmark sets.
+
+Every writable batch also appends a flushed event stream to `logs/batch-events.log`. A `START` record is persisted before each solve, followed by `SUCCESS` or `ERROR`; an unmatched final `START` therefore identifies the active instance if the process is killed or crashes before C++ can report an exception. A caught solver, input, Gurobi, or output exception is additionally appended to `logs/<problem>__<instance_key>.failure.log` with the complete resource profile and message. If a later resume solves that instance, the same file retains the failure history and receives a `RECOVERED` record.
 
 #### Output Files
 
@@ -269,7 +271,7 @@ Each problem-specific results CSV contains one row per run with the following fi
 | `gurobi_required` | `1` when the run required an accessible Gurobi runtime and prohibited fallback, otherwise `0` |
 | `solution_file` | `.sol` path relative to the output directory |
 
-CSV fields containing commas, quotes, or line breaks use standard double-quote escaping. Input paths below the repository root established by a supplied launcher, or below the working directory when the executable is called directly, are recorded as normalized relative paths. PrecPack refuses to append to an existing problem-specific results CSV with a different header, preventing rows with incompatible schemas from being mixed.
+CSV fields containing commas, quotes, or line breaks use standard double-quote escaping. Input paths below the repository root established by a supplied launcher, or below the working directory when the executable is called directly, are recorded as normalized relative paths. PrecPack refuses to append to an existing problem-specific results CSV with a different header, preventing rows with incompatible schemas from being mixed. In single-instance mode, it also refuses a repeated `instance_key` before solving so that an existing CSV row can never refer to an overwritten `.sol`; use a different output directory for an independent rerun, or use batch mode for profile-checked resume behavior.
 
 Each output directory contains a zero-byte `.precpack.lock` coordination file. PrecPack uses an operating-system file lock on it to serialize writers; the lock is released automatically when the process exits, including after an abnormal termination. The file may remain in place and is not solver output.
 
@@ -320,7 +322,7 @@ Use `build\Release\precpack.exe` for a standard Windows build.
 
 Batch selection and recovery are implemented by the same compiled `precpack` executable. The platform launchers execute instances sequentially and skip an instance only when its CSV row matches the requested problem, resource profile, build capability, and solution path, and the referenced `.sol` file exists and is nonempty. A conflicting profile or a CSV row without its solution file is reported as inconsistent instead of being silently mixed into or skipped within the same output directory.
 
-Use `./code/scripts/run_batch.sh` on macOS or Linux and `code\scripts\run_batch.bat` on Windows Command Prompt. Both launch the same C++ batch implementation with the same arguments. Relative `--input`, `--graph-dir`, and `--output-dir` paths are resolved from the directory in which the launcher is called; bundled default data remain located from the repository root. PrecPack prevents two processes from writing the same output directory concurrently.
+Use `./code/scripts/run_batch.sh` on macOS or Linux and `code\scripts\run_batch.bat` on Windows Command Prompt. Both launch the same C++ batch implementation with the same arguments. Relative `--input`, `--graph-dir`, and `--output-dir` paths are resolved from the directory in which the launcher is called; the default benchmark data remain located from the repository root. PrecPack prevents two processes from writing the same output directory concurrently.
 
 Run a small BPP-P directory:
 
@@ -332,7 +334,7 @@ Run a small BPP-P directory:
   --threads 4
 ```
 
-Run one SALBP-I suite:
+Run the Scholl SALBP-I benchmark set:
 
 ```bash
 ./code/scripts/run_batch.sh \
@@ -350,11 +352,11 @@ Run one BPP-GP separation family and size:
   --graph-dir data/bpp-gp-graphs/separation-01/n_0020
 ```
 
-Omitting `--input` selects the complete bundled collection for the requested problem. A complete batch can take a long time; use a suite or size directory for an initial check.
+Omitting `--input` selects the complete benchmark set for the requested problem. A complete batch can take a long time; use a benchmark subset or an instance-size directory for an initial check.
 
 #### Parallel Experiments
 
-`run_parallel.sh` and `run_parallel.bat` run the multithreaded configurations for the controlled experiment reported in the paper's “Parallel Scalability” table. They use the complete Otto collections with 100 items for SALBP-I, BPP-P, and both BPP-GP labeled-graph families. Each 525-instance set is run sequentially with 2, 4, and 8 solver threads, for 12 configurations and 6,300 runs. The corresponding single-thread results are produced by the problem-level batch runs and are not repeated here. The limits are 350 seconds for SALBP-I, 1,000 seconds for BPP-P, and 75 seconds for each BPP-GP family; every configuration uses 24,576 MiB of globally accounted BBR memory and the fixed 60,000,000-state cap.
+`run_parallel.sh` and `run_parallel.bat` run the multithreaded configurations for the controlled experiment reported in the paper's “Parallel Scalability” table. They use the complete 100-item Otto benchmark sets for SALBP-I, BPP-P, and both BPP-GP labeled-graph sets. Each 525-instance set is run sequentially with 2, 4, and 8 solver threads, for 12 configurations and 6,300 runs. The corresponding single-thread results are produced by the problem-level batch runs and are not repeated here. The limits are 350 seconds for SALBP-I, 1,000 seconds for BPP-P, and 75 seconds for each BPP-GP graph set; every configuration uses 24,576 MiB of globally accounted BBR memory and the fixed 60,000,000-state cap.
 
 The experiment uses one frozen Gurobi-enabled Release executable so that the BPP-P and BPP-GP configurations retain the reported `price-and-switch` root policy. It therefore requires an accessible Gurobi license, although the general PrecPack solver remains exact without Gurobi. The experiment launcher enables a strict runtime profile: it verifies the license before solving, aborts on any later Gurobi failure instead of falling back, and records `gurobi_required=1`. Build once and do not rebuild while a batch is being resumed.
 
@@ -372,25 +374,25 @@ code\scripts\build.bat --gurobi on
 code\scripts\run_parallel.bat
 ```
 
-Results are isolated below `results/parallel-experiments/<problem>/threads-<n>/`, preventing one thread configuration from overwriting another configuration's solution files. The launcher executes only one configuration at a time, restricts third-party numerical libraries to one thread, and verifies the 525-instance matrices, Gurobi runtime, problem, resource profile, CSV uniqueness, and solution-file presence before resuming. `--output-dir DIR` selects another output root. `--check-only` validates all 12 selections and compatible existing output without solving or requiring a Gurobi license, allowing the launcher matrix to be checked in the commercial-solver-free CI build. After all 6,300 runs complete, speedup and parallel efficiency can be computed by joining these CSV rows with the existing single-thread results on `instance_key` and retaining the common optimally solved subset. The total worst-case configured sequential time budget is 656.25 hours, excluding build and launcher overhead.
+Results are isolated below `results/parallel-experiments/<problem>/threads-<n>/`, preventing one thread configuration from overwriting another configuration's solution files. The launcher executes only one configuration at a time, restricts third-party numerical libraries to one thread, and verifies each 525-instance selection, the Gurobi runtime, problem, resource profile, CSV uniqueness, and solution-file presence before resuming. `--output-dir DIR` selects another output root. `--check-only` validates all 12 selections and compatible existing output without solving or requiring a Gurobi license, allowing the experiment design to be checked in the commercial-solver-free CI build. After all 6,300 runs complete, speedup and parallel efficiency can be computed by joining these CSV rows with the existing single-thread results on `instance_key` and retaining the common optimally solved subset. The total worst-case configured sequential time budget is 656.25 hours, excluding build and launcher overhead.
 
 ## Benchmark Instances
 
-The `data/instances/` tree contains:
+The repository includes the following benchmark sets:
 
-| Problem | Bundled collection | Count |
+| Problem | Benchmark set | Count |
 | --- | --- | ---: |
-| BPP-P | Seven shared 525-instance Otto size groups plus the shared 269-instance Scholl collection | 3,944 |
-| BPP-GP | Two labeled graph families paired with the 3,675 shared Otto base instances | 7,350 |
-| SALBP-I | The shared Otto and Scholl collections, including 4,725 additional Otto-50 permutations | 8,669 |
+| BPP-P | Seven Otto instance-size sets with 525 instances each, plus the 269-instance Scholl set | 3,944 |
+| BPP-GP | Two labeled-graph sets, each paired with the 3,675 Otto base instances | 7,350 |
+| SALBP-I | The Otto and Scholl sets, plus 4,725 additional permutations of the Otto 50-item instances | 8,669 |
 
-The bundled instances are drawn from or based on the following benchmark collections:
+The benchmark instances are drawn from or based on the following benchmark sets:
 
-- the public [Scholl 1993 SALBP benchmark collection](https://assembly-line-balancing.de/salbp/benchmark-data-sets-1993/);
-- the public [Otto et al. 2013 SALBP benchmark collection](https://assembly-line-balancing.de/salbp/benchmark-data-sets-2013/) accompanying [“Systematic data generation and test design for solution algorithms on the example of SALBPGen for assembly line balancing”](https://doi.org/10.1016/j.ejor.2012.12.029);
-- the BPP-P and BPP-GP benchmark design described by Kramer, Dell'Amico, and Iori in [“A batching-move iterated local search algorithm for the bin packing problem with generalized precedence constraints”](https://doi.org/10.1080/00207543.2017.1341065).
+- the public [Scholl 1993 SALBP benchmark set](https://assembly-line-balancing.de/salbp/benchmark-data-sets-1993/);
+- the public [Otto et al. 2013 SALBP benchmark set](https://assembly-line-balancing.de/salbp/benchmark-data-sets-2013/) accompanying [“Systematic data generation and test design for solution algorithms on the example of SALBPGen for assembly line balancing”](https://doi.org/10.1016/j.ejor.2012.12.029);
+- the BPP-P and BPP-GP benchmark sets described by Kramer, Dell'Amico, and Iori in [“A batching-move iterated local search algorithm for the bin packing problem with generalized precedence constraints”](https://doi.org/10.1080/00207543.2017.1341065).
 
-We gratefully thank the authors and maintainers of these benchmark collections for making them available to the research community. See [`data/README.md`](data/README.md) for the mathematical interpretation, directory map, `.txt` and `.graph` formats, file pairing rules, exact counts, and detailed attribution. The bundled files contain no PrecPack result rows, solutions, logs, or timing records.
+We gratefully thank the authors and maintainers of these benchmark sets for making them available to the research community. See [`data/README.md`](data/README.md) for the mathematical interpretation, directory map, `.txt` and `.graph` formats, file pairing rules, exact counts, and detailed attribution. The benchmark files contain no PrecPack result rows, solutions, logs, or timing records.
 
 ## Contact
 
@@ -402,4 +404,4 @@ PrecPack source code is released under the [MIT License](LICENSE).
 
 Copyright (c) 2026 Sunkanghong Wang.
 
-Gurobi is governed by its own license. The bundled benchmark instances retain the source attribution and acknowledgements given in the [data documentation](data/README.md).
+Gurobi is governed by its own license. The included benchmark instances retain the source attribution and acknowledgements given in the [data documentation](data/README.md).
