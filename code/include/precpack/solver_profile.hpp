@@ -20,9 +20,6 @@ enum class ProblemKind {
 [[nodiscard]] Config make_solver_config(
     ProblemKind problem,
     double time_limit_seconds,
-    std::uint64_t memory_limit_mb,
-    int threads = 1);
-
-[[nodiscard]] int resolve_thread_count(int requested_threads) noexcept;
+    std::uint64_t memory_limit_mb);
 
 }

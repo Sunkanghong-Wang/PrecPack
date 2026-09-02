@@ -8,6 +8,7 @@
 #include "precpack/result_io.hpp"
 #include "precpack/solver_profile.hpp"
 
+#include "batch_schedule.hpp"
 #include "environment.hpp"
 
 #include <chrono>
@@ -154,13 +155,91 @@ void test_public_defaults() {
             "BPP-P unexpectedly accepted a graph by default");
     require(std::abs(options.time_limit_seconds - 300.0) < 1e-12,
             "public time-limit default changed");
+    require(!options.time_limit_was_set,
+            "the default time limit was marked as an explicit override");
     require(options.memory_limit_mb == 24ULL * 1024ULL,
             "public memory-limit default changed");
-    require(options.threads == 1, "public thread default changed");
-    require(options.output_directory == "results",
+    require(options.output_directory ==
+                std::filesystem::path("results/bpp-p"),
             "public output-directory default changed");
-    require(!options.batch_mode && !options.check_only,
+    require(!options.batch_mode,
             "single-instance mode unexpectedly enabled batch behavior");
+
+    const precpack::CommandLineOptions explicit_limit = parse(
+        {"precpack", "--problem", "bpp-p", "--instance", "case.txt",
+         "--time-limit", "42"});
+    require(explicit_limit.time_limit_was_set &&
+                std::abs(explicit_limit.time_limit_seconds - 42.0) < 1e-12,
+            "an explicit time-limit override was not recorded");
+    require(precpack::make_command_line_solver_config(options, 42.0)
+                .bbr_enable_root_strengthening,
+            "the default BPP-P profile unexpectedly disabled root "
+            "strengthening");
+}
+
+void test_bundled_benchmark_time_schedule() {
+    TemporaryDirectory temporary_directory;
+    const std::filesystem::path instance_root =
+        temporary_directory.path() / "data" / "instances";
+
+    const auto make_case = [&](const std::filesystem::path& relative) {
+        const std::filesystem::path path =
+            instance_root / relative / "case.txt";
+        std::filesystem::create_directories(path.parent_path());
+        write_text_file(path, "instance\n");
+        return precpack::BatchCase{
+            std::filesystem::weakly_canonical(path), std::nullopt};
+    };
+    const precpack::BatchCase scholl = make_case("scholl/Bowman");
+    const precpack::BatchCase otto20 = make_case("otto/n_0020");
+    const precpack::BatchCase otto50_permuted =
+        make_case("otto/n_0050_permuted");
+    const precpack::BatchCase otto100 = make_case("otto/n_0100");
+    const precpack::BatchCase otto250 = make_case("otto/n_0250");
+    const precpack::BatchCase otto1000 = make_case("otto/n_1000");
+    const precpack::BatchCase external = [&] {
+        const std::filesystem::path path =
+            temporary_directory.path() / "external" / "case.txt";
+        std::filesystem::create_directories(path.parent_path());
+        write_text_file(path, "instance\n");
+        return precpack::BatchCase{
+            std::filesystem::weakly_canonical(path), std::nullopt};
+    }();
+
+    const auto limit = [&](precpack::ProblemKind problem,
+                           const precpack::BatchCase& batch_case) {
+        precpack::CommandLineOptions options;
+        options.problem = problem;
+        return precpack::internal::effective_batch_time_limit(
+            options, batch_case, instance_root);
+    };
+
+    require(limit(precpack::ProblemKind::kSalbpI, scholl) == 350.0 &&
+                limit(precpack::ProblemKind::kSalbpI, otto20) == 1000.0 &&
+                limit(precpack::ProblemKind::kSalbpI,
+                      otto50_permuted) == 1000.0 &&
+                limit(precpack::ProblemKind::kSalbpI, otto100) == 350.0 &&
+                limit(precpack::ProblemKind::kSalbpI, otto250) == 75.0 &&
+                limit(precpack::ProblemKind::kSalbpI, otto1000) == 350.0,
+            "SALBP-I bundled benchmark time schedule changed");
+    require(limit(precpack::ProblemKind::kBppP, scholl) == 1000.0 &&
+                limit(precpack::ProblemKind::kBppP, otto20) == 75.0 &&
+                limit(precpack::ProblemKind::kBppP, otto100) == 1000.0 &&
+                limit(precpack::ProblemKind::kBppP, otto1000) == 75.0,
+            "BPP-P bundled benchmark time schedule changed");
+    require(limit(precpack::ProblemKind::kBppGp, otto20) == 75.0 &&
+                limit(precpack::ProblemKind::kBppGp, otto1000) == 75.0,
+            "BPP-GP bundled benchmark time schedule changed");
+    require(limit(precpack::ProblemKind::kBppP, external) == 300.0,
+            "custom batch input did not retain the product default");
+
+    precpack::CommandLineOptions override_options;
+    override_options.problem = precpack::ProblemKind::kBppP;
+    override_options.time_limit_seconds = 42.0;
+    override_options.time_limit_was_set = true;
+    require(precpack::internal::effective_batch_time_limit(
+                override_options, otto100, instance_root) == 42.0,
+            "explicit time limit did not override the benchmark schedule");
 }
 
 void test_exact_arithmetic() {
@@ -223,6 +302,16 @@ void test_public_validation() {
     require(rejected_removed_switch,
             "a removed algorithm switch remains publicly accepted");
 
+    bool rejected_removed_check_only = false;
+    try {
+        static_cast<void>(parse({"precpack", "--batch", "--problem",
+                                 "bpp-p", "--check-only"}));
+    } catch (const std::invalid_argument&) {
+        rejected_removed_check_only = true;
+    }
+    require(rejected_removed_check_only,
+            "the removed --check-only option remains publicly accepted");
+
     bool required_graph = false;
     try {
         static_cast<void>(parse({"precpack", "--problem", "bpp-gp",
@@ -232,23 +321,10 @@ void test_public_validation() {
     }
     require(required_graph, "BPP-GP did not require its GRAPH file");
 
-    const precpack::CommandLineOptions parallel = parse(
-        {"precpack", "--problem", "bpp-p", "--instance", "case.txt",
-         "--threads", "-1"});
-    require(parallel.threads == -1, "automatic thread selection was not parsed");
-    bool rejected_zero_threads = false;
-    try {
-        static_cast<void>(parse({"precpack", "--problem", "bpp-p",
-                                 "--instance", "case.txt", "--threads", "0"}));
-    } catch (const std::invalid_argument&) {
-        rejected_zero_threads = true;
-    }
-    require(rejected_zero_threads, "zero worker threads were accepted");
-
     const precpack::CommandLineOptions batch = parse(
         {"precpack", "--batch", "--problem", "bpp-gp", "--input",
-         "items", "--graph-dir", "graphs", "--check-only"});
-    require(batch.batch_mode && batch.check_only &&
+         "items", "--graph-dir", "graphs"});
+    require(batch.batch_mode &&
                 batch.input_path == std::filesystem::path("items") &&
                 batch.graph_directory == std::filesystem::path("graphs") &&
                 batch.output_directory ==
@@ -357,7 +433,7 @@ void test_batch_pairing() {
             "mismatched BPP-GP instance and graph were accepted");
 }
 
-void test_batch_resume_profile() {
+void test_batch_resume_by_solution() {
     TemporaryDirectory temporary_directory;
     const std::filesystem::path instance_path =
         temporary_directory.path() / "items" / "case.txt";
@@ -367,65 +443,31 @@ void test_batch_resume_profile() {
     write_text_file(instance_path, "instance");
     const std::filesystem::path canonical_instance =
         std::filesystem::weakly_canonical(instance_path);
-    const std::string key =
-        precpack::make_instance_key(canonical_instance, std::nullopt);
     const std::filesystem::path solution_reference =
-        std::filesystem::path("solutions") / ("bpp-p__" + key + ".sol");
+        std::filesystem::path("solutions") / "items" / "case.sol";
     std::filesystem::create_directories(
         (output_directory / solution_reference).parent_path());
     write_text_file(output_directory / solution_reference, "Bin 1: 1\n");
-
-    precpack::Instance instance;
-    instance.problem_type = "BPP-P";
-    instance.capacity = 10;
-    instance.items = {{0, 5}};
-    precpack::Solution solution;
-    solution.status = precpack::SolveStatus::kOptimal;
-    solution.optimal = true;
-    solution.lower_bound = 1;
-    solution.upper_bound = 1;
-    solution.threads = 1;
-    solution.bbr_stats.time_limit_seconds = 60.0;
-    solution.bbr_stats.memory_limit_bytes = 512ULL * 1024ULL * 1024ULL;
-    precpack::append_result_csv(
-        output_directory / "BPP-P_Results.csv", key, canonical_instance,
-        std::nullopt, instance, solution, solution_reference);
+    const std::filesystem::path result_path =
+        output_directory / "BPP-P_Results.csv";
+    write_text_file(result_path, "old_schema\n");
 
     precpack::CommandLineOptions options;
     options.batch_mode = true;
-    options.check_only = true;
     options.problem = precpack::ProblemKind::kBppP;
     options.input_path = canonical_instance;
     options.output_directory = output_directory;
     options.time_limit_seconds = 60.0;
     options.memory_limit_mb = 512U;
-    options.threads = 1;
     require(precpack::run_batch(options) == 0,
-            "a compatible completed batch result was not resumed");
+            "an existing solution was not skipped");
+    require(read_text_file(result_path) == "old_schema\n",
+            "solution-file resume inspected or changed an unused CSV");
 
-    options.threads = 2;
-    bool rejected_profile_mismatch = false;
-    try {
-        static_cast<void>(precpack::run_batch(options));
-    } catch (const std::runtime_error&) {
-        rejected_profile_mismatch = true;
-    }
-    require(rejected_profile_mismatch,
-            "batch resume accepted a mismatched thread profile");
-
-    options.threads = 1;
-    bool rejected_gurobi_profile = false;
-    {
-        ScopedEnvironment strict_gurobi(
-            "PRECPACK_REQUIRE_GUROBI_RUNTIME", "1");
-        try {
-            static_cast<void>(precpack::run_batch(options));
-        } catch (const std::runtime_error&) {
-            rejected_gurobi_profile = true;
-        }
-    }
-    require(rejected_gurobi_profile,
-            "batch resume mixed strict and optional Gurobi profiles");
+    options.time_limit_seconds = 1.0;
+    options.memory_limit_mb = 64U;
+    require(precpack::run_batch(options) == 0,
+            "resource settings prevented solution-file resume");
 }
 
 void test_batch_caller_directory() {
@@ -434,10 +476,15 @@ void test_batch_caller_directory() {
         temporary_directory.path() / "caller directory";
     std::filesystem::create_directories(caller);
     write_text_file(caller / "local-instance.txt", "instance");
+    const std::filesystem::path output_directory = caller / "relative output";
+    const std::filesystem::path existing_solution =
+        output_directory / "solutions" / caller.filename() /
+        "local-instance.sol";
+    std::filesystem::create_directories(existing_solution.parent_path());
+    write_text_file(existing_solution, "Bin 1: 1\n");
 
     precpack::CommandLineOptions options;
     options.batch_mode = true;
-    options.check_only = true;
     options.problem = precpack::ProblemKind::kBppP;
     options.input_path = "local-instance.txt";
     options.output_directory = "relative output";
@@ -447,11 +494,13 @@ void test_batch_caller_directory() {
         "PRECPACK_CALLER_DIRECTORY", caller_string.c_str());
     require(precpack::run_batch(options) == 0,
             "batch paths were not resolved from the launcher caller");
-    require(!std::filesystem::exists(caller / "relative output"),
-            "check-only batch unexpectedly created its output directory");
+    require(!std::filesystem::exists(output_directory / "BPP-P_Results.csv"),
+            "a fully resumed batch unexpectedly created a result CSV");
+    require(!std::filesystem::exists(output_directory / "errors.log"),
+            "a batch without errors unexpectedly created errors.log");
 }
 
-void test_batch_failure_logging() {
+void test_batch_failure_output() {
     TemporaryDirectory temporary_directory;
     const std::filesystem::path instance_path =
         temporary_directory.path() / "invalid-instance.txt";
@@ -466,36 +515,20 @@ void test_batch_failure_logging() {
     options.output_directory = output_directory;
     options.time_limit_seconds = 1.0;
     options.memory_limit_mb = 64U;
-    options.threads = 1;
     require(precpack::run_batch(options) == 1,
             "an invalid batch instance did not report failure");
 
-    const std::filesystem::path canonical_instance =
-        std::filesystem::weakly_canonical(instance_path);
-    const std::string key =
-        precpack::make_instance_key(canonical_instance, std::nullopt);
-    const std::filesystem::path event_path =
-        output_directory / "logs" / "batch-events.log";
-    const std::filesystem::path failure_path =
-        output_directory / "logs" /
-        ("bpp-p__" + key + ".failure.log");
-    const std::string events = read_text_file(event_path);
-    require(events.find("event=BATCH_START") != std::string::npos &&
-                events.find("event=START instance_key=" + key) !=
-                    std::string::npos &&
-                events.find("event=ERROR instance_key=" + key) !=
-                    std::string::npos &&
-                events.find("event=BATCH_END failures=1") !=
-                    std::string::npos,
-            "batch event log does not preserve the failed attempt");
-    const std::string failure = read_text_file(failure_path);
-    require(failure.find("event=ERROR") != std::string::npos &&
-                failure.find("instance_key=" + key) != std::string::npos &&
-                failure.find("threads=1") != std::string::npos &&
-                failure.find("exception=std::exception") !=
-                    std::string::npos &&
-                failure.find("message=") != std::string::npos,
-            "per-instance failure log is incomplete");
+    const std::filesystem::path error_log = output_directory / "errors.log";
+    require(std::filesystem::is_regular_file(error_log),
+            "batch failure did not create errors.log");
+    const std::string error_text = read_text_file(error_log);
+    require(error_text.find("invalid-instance.txt") != std::string::npos &&
+                error_text.find("error") != std::string::npos,
+            "batch failure log omitted the instance or diagnostic");
+    require(!std::filesystem::exists(output_directory / "logs"),
+            "batch failure created a routine logs directory");
+    require(!std::filesystem::exists(output_directory / ".precpack.lock"),
+            "batch failure created a standalone lock file");
 }
 
 void test_instance_file_validation() {
@@ -624,7 +657,6 @@ void test_bpp_profile() {
         precpack::ProblemKind::kBppGp, 17.0, 512);
     require(config.seed == 1,
             "fixed reproducibility controls changed");
-    require(config.threads == 1, "serial profile default changed");
     require(config.time_limit_seconds == 17.0 &&
                 config.bbr_memory_limit_mb == 512,
             "resource limits were not forwarded");
@@ -634,21 +666,14 @@ void test_bpp_profile() {
     require(config.bbr_enable_paper_queue_order &&
                 config.bbr_enable_complete_dff,
             "BPP-GP 2016 queue/DFF profile changed");
-    require(config.bbr_enable_root_strengthening &&
-                config.bbr_root_cg_time_limit_seconds == 5.0,
-            "BPP-GP adaptive price-and-switch profile changed");
-    require(!config.bbr_enable_binlb,
-            "BPP-GP enabled an excluded component");
-}
-
-void test_parallel_profile() {
-    const precpack::Config config = precpack::make_solver_config(
-        precpack::ProblemKind::kBppGp, 17.0, 512, 8);
-    require(config.threads == 8,
-            "explicit shared-memory worker count was not forwarded");
-    require(precpack::resolve_thread_count(8) == 8 &&
-                precpack::resolve_thread_count(-1) >= 1,
-            "thread-count resolution is invalid");
+    require(config.bbr_enable_root_strengthening,
+            "BPP-GP position-free root profile changed");
+    require(config.bbr_enable_binlb &&
+                config.bbr_enable_conflict_binlb &&
+                config.bbr_binlb_total_time_limit_seconds == 0.1 &&
+                config.bbr_conflict_binlb_call_time_limit_seconds == 0.005 &&
+                config.bbr_conflict_binlb_node_limit == 50'000U,
+            "BPP-GP bounded conflict-aware BINLB profile changed");
 }
 
 void test_salbp_profile() {
@@ -663,35 +688,40 @@ void test_salbp_profile() {
                 config.bbr12_mhh_full_load_limit == 1000,
             "SALBP-I bounded MHH profile changed");
     require(config.bbr_enable_binlb &&
+                config.bbr_enable_conflict_binlb &&
                 config.bbr_binlb_call_time_limit_seconds == 1.0 &&
                 config.bbr_binlb_total_time_limit_seconds == 0.1 &&
                 config.bbr_binlb_node_limit == 1'000'000U &&
-                config.bbr_binlb_load_limit == 50U,
+                config.bbr_binlb_load_limit == 50U &&
+                config.bbr_conflict_binlb_call_time_limit_seconds == 0.005 &&
+                config.bbr_conflict_binlb_node_limit == 50'000U,
             "SALBP-I bounded BINLB profile changed");
     require(config.bbr_enable_complete_dff &&
                 config.bbr_dff_transform_limit == 15,
             "SALBP-I complete DFF profile changed");
+    require(config.bbr_enable_closure_bound,
+            "SALBP-I residual closure bound was disabled");
     require(!config.bbr_enable_initial_bdp &&
-                !config.bbr_enable_paper_queue_order &&
-                !config.bbr_enable_closure_bound &&
-                !config.bbr_enable_root_strengthening,
+                !config.bbr_enable_paper_queue_order,
             "SALBP-I enabled an excluded component");
+    require(config.bbr_enable_root_strengthening,
+            "SALBP-I universal position-free root bound was disabled");
 }
 
 void test_output_schema() {
-    require(precpack::make_instance_key("external-a/case.txt", std::nullopt) ==
-                "case__3a95170ceb4e4d41",
-            "instance-key path fingerprint changed");
-    require(precpack::make_instance_key("external-a/case.txt", std::nullopt) !=
-                precpack::make_instance_key("external-b/case.txt", std::nullopt),
-            "same-stem instances from different directories share a key");
-    require(precpack::make_instance_key(
-                "data/items/case.txt",
-                std::filesystem::path("data/graphs/separation-01/case.graph")) !=
-                precpack::make_instance_key(
-                    "data/items/case.txt",
-                    std::filesystem::path("data/graphs/separation-03/case.graph")),
-            "different BPP-GP graphs share an instance key");
+    require(precpack::make_instance_set(
+                "data/instances/otto/n_0020/case.txt", std::nullopt) ==
+                "otto/n_0020",
+            "Otto instance-set name changed");
+    require(precpack::make_instance_set(
+                "data/instances/otto/n_0020/case.txt",
+                std::filesystem::path(
+                    "data/bpp-gp-graphs/separation-03/n_0020/case.graph")) ==
+                "separation-03/n_0020",
+            "BPP-GP instance-set name changed");
+    require(precpack::make_instance_set(
+                "external-a/case.txt", std::nullopt) == "external-a",
+            "external instance-set name changed");
 
     TemporaryDirectory temporary_directory;
     const std::filesystem::path csv_path =
@@ -712,10 +742,10 @@ void test_output_schema() {
     solution.upper_bound = 2;
     solution.relative_gap = 0.0;
     solution.stats.total_seconds = 1.25;
-    solution.threads = 4;
     solution.bbr_stats.time_limit_seconds = 60.0;
     solution.bbr_stats.memory_limit_bytes = 512ULL * 1024ULL * 1024ULL;
     solution.bbr_stats.peak_memory_bytes = 123'456ULL;
+    solution.bbr_stats.states_created = 987'654ULL;
     solution.assignment.bin_of_item = {0, 0, 1};
     solution.assignment.bin_count = 2;
 
@@ -725,65 +755,32 @@ void test_output_schema() {
     require(!std::filesystem::exists(temporary_assignment_path),
             "completed assignment write left a temporary file");
     precpack::append_result_csv(
-        csv_path, "case,1", "data/case,1.txt", std::nullopt, instance,
-        solution, "solutions/case.sol");
+        csv_path, "otto/n_0020", "case,1", instance, solution);
 
     const std::string expected_csv =
-        "instance_key,problem,instance_file,graph_file,n,capacity,status,"
-        "lower_bound,upper_bound,gap,time_seconds,time_limit_seconds,threads,"
-        "memory_limit_mb,bbr_peak_memory_bytes,gurobi_enabled,"
-        "gurobi_required,solution_file\n"
-        "\"case,1\",BPP-P,\"data/case,1.txt\",,3,10,OPTIMAL,2,2,0,1.25,"
-        "60,4,512,123456," +
-        std::string(precpack::kHasGurobiSupport ? "1" : "0") +
-        ",1,solutions/case.sol\n";
+        "instance_set,instance,n,time_limit_seconds,memory_limit_mb,status,"
+        "opt,lower_bound,upper_bound,time_seconds,"
+        "bbr_peak_memory_bytes,bbr_states_created\n"
+        "otto/n_0020,\"case,1\",3,60,512,OPTIMAL,1,2,2,1.25,"
+        "123456,987654\n";
     require(read_text_file(csv_path) == expected_csv,
             "result CSV schema or serialization changed");
-    const std::vector<precpack::ResultReference> references =
-        precpack::read_result_references(csv_path);
-    require(references.size() == 1U &&
-                references.front().instance_key == "case,1" &&
-                references.front().problem == "BPP-P" &&
-                std::abs(references.front().time_limit_seconds - 60.0) <
-                    1e-12 &&
-                references.front().threads == 4 &&
-                references.front().memory_limit_mb == 512U &&
-                references.front().gurobi_enabled ==
-                    precpack::kHasGurobiSupport &&
-                references.front().gurobi_required &&
-                references.front().solution_file == "solutions/case.sol",
-            "result CSV references were not parsed correctly");
-
-    const std::filesystem::path malformed_result_path =
-        temporary_directory.path() / "malformed-result.csv";
-    std::string malformed_result = expected_csv;
-    const std::size_t time_field = malformed_result.find(",60,4,512,");
-    require(time_field != std::string::npos,
-            "test result row no longer contains the expected profile fields");
-    malformed_result.replace(time_field, 4U, ",,");
-    write_text_file(malformed_result_path, malformed_result);
-    bool rejected_malformed_result = false;
-    try {
-        static_cast<void>(
-            precpack::read_result_references(malformed_result_path));
-    } catch (const std::runtime_error&) {
-        rejected_malformed_result = true;
-    }
-    require(rejected_malformed_result,
-            "a result row with an empty time limit was accepted");
+    const std::filesystem::path limited_csv_path =
+        temporary_directory.path() / "limited.csv";
+    precpack::Solution limited = solution;
+    limited.status = precpack::SolveStatus::kTimeLimit;
+    limited.optimal = false;
+    limited.lower_bound = 1;
+    precpack::append_result_csv(
+        limited_csv_path, "otto/n_0020", "case-2", instance, limited);
+    require(read_text_file(limited_csv_path).find(
+                ",TIME_LIMIT,0,1,2,") != std::string::npos,
+            "a limited result was not serialized with opt=0");
     require(read_text_file(assignment_path) ==
                 "Bin 1: 1 2\nBin 2: 3\n",
             "assignment file contains redundant metadata or changed format");
-
-    bool rejected_duplicate_key = false;
-    try {
-        precpack::require_unused_instance_key(csv_path, "case,1");
-    } catch (const std::runtime_error&) {
-        rejected_duplicate_key = true;
-    }
-    require(rejected_duplicate_key,
-            "an existing single-instance result key was accepted");
-    precpack::require_unused_instance_key(csv_path, "unused-case");
+    require(precpack::has_nonempty_solution(assignment_path),
+            "nonempty solution was not detected");
 
     precpack::Solution replacement = solution;
     replacement.assignment.bin_of_item = {0, 1, 2};
@@ -800,8 +797,7 @@ void test_output_schema() {
     bool rejected_incompatible_header = false;
     try {
         precpack::append_result_csv(
-            incompatible_path, "case", "data/case.txt", std::nullopt,
-            instance, solution, "solutions/case.sol");
+            incompatible_path, "otto/n_0020", "case", instance, solution);
     } catch (const std::runtime_error&) {
         rejected_incompatible_header = true;
     }
@@ -811,23 +807,35 @@ void test_output_schema() {
 
 void test_output_lock() {
     TemporaryDirectory temporary_directory;
-    const std::filesystem::path output_directory =
-        temporary_directory.path() / "results";
+    const std::filesystem::path result_path =
+        temporary_directory.path() / "results" / "BPP-P_Results.csv";
     {
-        precpack::OutputLock first(output_directory);
+        precpack::OutputLock first(result_path);
+        std::ofstream output(result_path, std::ios::app | std::ios::binary);
+        require(static_cast<bool>(output),
+                "the result lock blocked its owning writer");
+        output << "test\n";
+        output.flush();
+        require(static_cast<bool>(output),
+                "the result lock blocked a result write");
+        output.close();
+        require(static_cast<bool>(output),
+                "the locked result CSV could not be closed");
         bool rejected_second = false;
         try {
-            precpack::OutputLock second(output_directory);
+            precpack::OutputLock second(result_path);
         } catch (const std::runtime_error&) {
             rejected_second = true;
         }
         require(rejected_second,
-                "two writers acquired the same output-directory lock");
+                "two writers acquired the same result-CSV lock");
     }
-    precpack::OutputLock reacquired(output_directory);
-    require(std::filesystem::is_regular_file(
-                output_directory / ".precpack.lock"),
-            "output lock file was not retained for race-free reuse");
+    precpack::OutputLock reacquired(result_path);
+    require(std::filesystem::is_regular_file(result_path) &&
+                read_text_file(result_path) == "test\n" &&
+                !std::filesystem::exists(
+                    result_path.parent_path() / ".precpack.lock"),
+            "result locking created a standalone lock file");
 }
 
 }
@@ -835,15 +843,15 @@ void test_output_lock() {
 int main() {
     try {
         test_public_defaults();
+        test_bundled_benchmark_time_schedule();
         test_exact_arithmetic();
         test_public_validation();
         test_batch_pairing();
-        test_batch_resume_profile();
+        test_batch_resume_by_solution();
         test_batch_caller_directory();
-        test_batch_failure_logging();
+        test_batch_failure_output();
         test_instance_file_validation();
         test_bpp_profile();
-        test_parallel_profile();
         test_salbp_profile();
         test_output_lock();
         test_output_schema();

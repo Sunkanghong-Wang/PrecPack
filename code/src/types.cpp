@@ -1,6 +1,7 @@
 #include "precpack/types.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <functional>
 #include <limits>
 #include <queue>
@@ -89,14 +90,10 @@ void Instance::initialize() {
                std::tie(rhs.from, rhs.to, rhs.separation);
     });
 
-    predecessors.assign(static_cast<std::size_t>(n), {});
-    successors.assign(static_cast<std::size_t>(n), {});
     predecessor_arcs.assign(static_cast<std::size_t>(n), {});
     successor_arcs.assign(static_cast<std::size_t>(n), {});
     std::vector<int> indegree(static_cast<std::size_t>(n), 0);
     for (const Arc& arc : arcs) {
-        predecessors[static_cast<std::size_t>(arc.to)].push_back(arc.from);
-        successors[static_cast<std::size_t>(arc.from)].push_back(arc.to);
         predecessor_arcs[static_cast<std::size_t>(arc.to)].emplace_back(
             arc.from, arc.separation);
         successor_arcs[static_cast<std::size_t>(arc.from)].emplace_back(
@@ -116,7 +113,9 @@ void Instance::initialize() {
         const int current = ready.top();
         ready.pop();
         topological_order.push_back(current);
-        for (const int next : successors[static_cast<std::size_t>(current)]) {
+        for (const auto& [next, separation_value] :
+             successor_arcs[static_cast<std::size_t>(current)]) {
+            static_cast<void>(separation_value);
             if (--indegree[static_cast<std::size_t>(next)] == 0) {
                 ready.push(next);
             }
@@ -151,29 +150,57 @@ void Instance::initialize() {
         }
     }
 
-    constexpr int kUnreachable = std::numeric_limits<int>::min() / 4;
-    longest_separation.assign(static_cast<std::size_t>(n) * n, 0);
-    std::vector<int> distance(static_cast<std::size_t>(n), kUnreachable);
-    for (int source = 0; source < n; ++source) {
-        std::fill(distance.begin(), distance.end(), kUnreachable);
-        distance[static_cast<std::size_t>(source)] = 0;
-        for (const int current : topological_order) {
-            if (distance[static_cast<std::size_t>(current)] == kUnreachable) {
-                continue;
+    reachability_blocks = (static_cast<std::size_t>(n) + 63U) / 64U;
+    const std::size_t reachability_words =
+        static_cast<std::size_t>(n) * reachability_blocks;
+    reachable.assign(reachability_words, 0U);
+    reaching.assign(reachability_words, 0U);
+    positive_reachable.assign(reachability_words, 0U);
+    const auto set_bit = [](std::uint64_t* row, int item) noexcept {
+        row[static_cast<std::size_t>(item) / 64U] |=
+            std::uint64_t{1} << (static_cast<unsigned>(item) & 63U);
+    };
+    for (auto order = topological_order.rbegin();
+         order != topological_order.rend(); ++order) {
+        const int current = *order;
+        std::uint64_t* reachable_row = reachable.data() +
+            static_cast<std::size_t>(current) * reachability_blocks;
+        std::uint64_t* positive_row = positive_reachable.data() +
+            static_cast<std::size_t>(current) * reachability_blocks;
+        for (const auto& [next, separation_value] :
+             successor_arcs[static_cast<std::size_t>(current)]) {
+            const std::uint64_t* next_reachable = reachable.data() +
+                static_cast<std::size_t>(next) * reachability_blocks;
+            const std::uint64_t* positive_source =
+                separation_value > 0
+                    ? next_reachable
+                    : positive_reachable.data() +
+                          static_cast<std::size_t>(next) * reachability_blocks;
+            for (std::size_t block = 0; block < reachability_blocks; ++block) {
+                reachable_row[block] |= next_reachable[block];
+                positive_row[block] |= positive_source[block];
             }
-            for (const auto& [next, arc_distance] :
-                 successor_arcs[static_cast<std::size_t>(current)]) {
-                distance[static_cast<std::size_t>(next)] =
-                    std::max(distance[static_cast<std::size_t>(next)],
-                             checked_path_distance(
-                                 distance[static_cast<std::size_t>(current)],
-                                 arc_distance));
+            set_bit(reachable_row, next);
+            if (separation_value > 0) {
+                set_bit(positive_row, next);
             }
         }
-        for (int target = 0; target < n; ++target) {
-            if (distance[static_cast<std::size_t>(target)] != kUnreachable) {
-                longest_separation[static_cast<std::size_t>(source) * n + target] =
-                    distance[static_cast<std::size_t>(target)];
+    }
+    for (int from = 0; from < n; ++from) {
+        const std::uint64_t* row = reachable.data() +
+            static_cast<std::size_t>(from) * reachability_blocks;
+        for (std::size_t block = 0; block < reachability_blocks; ++block) {
+            std::uint64_t value = row[block];
+            while (value != 0U) {
+                const unsigned bit = std::countr_zero(value);
+                const int to = static_cast<int>(block * 64U + bit);
+                if (to < n) {
+                    set_bit(reaching.data() +
+                                static_cast<std::size_t>(to) *
+                                    reachability_blocks,
+                            from);
+                }
+                value &= value - 1U;
             }
         }
     }

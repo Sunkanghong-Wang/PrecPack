@@ -28,17 +28,10 @@ option(PRECPACK_ENABLE_IPO
        "Enable interprocedural optimization in Release builds" ON)
 option(PRECPACK_ENABLE_SANITIZERS
        "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
-option(PRECPACK_ENABLE_THREAD_SANITIZER
-       "Enable ThreadSanitizer for shared-memory BBR tests" OFF)
 set(PRECPACK_GUROBI "AUTO" CACHE STRING
     "Gurobi support: AUTO detects it, ON requires it, OFF excludes it")
 set_property(CACHE PRECPACK_GUROBI PROPERTY STRINGS AUTO ON OFF)
 set(GUROBI_ROOT "" CACHE PATH "Optional Gurobi installation root")
-
-if(PRECPACK_ENABLE_SANITIZERS AND PRECPACK_ENABLE_THREAD_SANITIZER)
-    message(FATAL_ERROR
-        "Address/UndefinedBehaviorSanitizer and ThreadSanitizer are mutually exclusive")
-endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 string(TOUPPER "${PRECPACK_GUROBI}" PRECPACK_GUROBI_MODE)
@@ -57,13 +50,14 @@ elseif(PRECPACK_GUROBI_MODE STREQUAL "AUTO")
         set(PRECPACK_HAS_GUROBI TRUE)
     endif()
 endif()
-find_package(Threads REQUIRED)
-
 set(PRECPACK_CORE_SOURCES
     src/algorithms.cpp
     src/batch.cpp
+    src/batch_schedule.cpp
     src/bbr.cpp
     src/bin_packing_bound.cpp
+    src/bppp_flow_bound.cpp
+    src/conflict_bin_packing.cpp
     src/cli.cpp
     src/dff.cpp
     src/initial_bounds.cpp
@@ -72,18 +66,17 @@ set(PRECPACK_CORE_SOURCES
     src/result_io.cpp
     src/solver.cpp
     src/solver_profile.cpp
-    src/types.cpp)
+    src/types.cpp
+    src/window_dff.cpp)
 
 if(PRECPACK_HAS_GUROBI)
     list(APPEND PRECPACK_CORE_SOURCES
-        src/bin_indexed_root_bound.cpp
         src/root_column_generation.cpp)
 endif()
 
 add_library(precpack_core STATIC ${PRECPACK_CORE_SOURCES})
 target_include_directories(precpack_core
     PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>")
-target_link_libraries(precpack_core PUBLIC Threads::Threads)
 if(PRECPACK_HAS_GUROBI)
     target_link_libraries(precpack_core PUBLIC GUROBI::GUROBI)
     target_compile_definitions(precpack_core PUBLIC PRECPACK_HAS_GUROBI=1)
@@ -129,8 +122,7 @@ if(PRECPACK_NATIVE_OPTIMIZATION AND
 endif()
 
 set(PRECPACK_IPO_SUPPORTED FALSE)
-if(PRECPACK_ENABLE_IPO AND NOT PRECPACK_ENABLE_SANITIZERS AND
-   NOT PRECPACK_ENABLE_THREAD_SANITIZER)
+if(PRECPACK_ENABLE_IPO AND NOT PRECPACK_ENABLE_SANITIZERS)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT PRECPACK_IPO_SUPPORTED
                         OUTPUT PRECPACK_IPO_ERROR LANGUAGES CXX)
@@ -153,15 +145,6 @@ function(precpack_configure_target target)
         target_compile_options(${target} PRIVATE
             -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined)
         target_link_options(${target} PRIVATE -fsanitize=address,undefined)
-    endif()
-    if(PRECPACK_ENABLE_THREAD_SANITIZER)
-        if(NOT CMAKE_CXX_COMPILER_ID MATCHES "AppleClang|Clang|GNU")
-            message(FATAL_ERROR
-                "ThreadSanitizer currently requires Clang, AppleClang, or GCC")
-        endif()
-        target_compile_options(${target} PRIVATE
-            -O1 -g -fno-omit-frame-pointer -fsanitize=thread)
-        target_link_options(${target} PRIVATE -fsanitize=thread)
     endif()
     if(PRECPACK_IPO_SUPPORTED)
         set_property(TARGET ${target}
@@ -217,14 +200,8 @@ if(BUILD_TESTING)
     target_link_libraries(precpack_interface_tests PRIVATE precpack_core)
     precpack_configure_target(precpack_interface_tests)
 
-    add_executable(precpack_parallel_tests scripts/test_parallel_bbr.cpp)
-    target_link_libraries(precpack_parallel_tests PRIVATE precpack_core)
-    precpack_configure_target(precpack_parallel_tests)
-
     add_test(NAME precpack_interface_tests COMMAND precpack_interface_tests)
-    add_test(NAME precpack_parallel_tests COMMAND precpack_parallel_tests)
-    list(APPEND PRECPACK_TEST_TARGETS
-        precpack_interface_tests precpack_parallel_tests)
+    list(APPEND PRECPACK_TEST_TARGETS precpack_interface_tests)
     set_tests_properties(${PRECPACK_TEST_TARGETS} PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         ENVIRONMENT
@@ -251,7 +228,7 @@ install(TARGETS precpack RUNTIME DESTINATION bin)
 
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES
     ${PRECPACK_CORE_SOURCES} src/main.cpp scripts/test_exactness.cpp
-    scripts/test_public_interface.cpp scripts/test_parallel_bbr.cpp)
+    scripts/test_public_interface.cpp)
 
 if(PRECPACK_HAS_GUROBI)
     message(STATUS
@@ -262,4 +239,4 @@ endif()
 message(STATUS "C++ compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Release flags recorded by PrecPack: ${PRECPACK_RELEASE_BUILD_FLAGS}")
-message(STATUS "Solver threads: runtime option (default: 1)")
+message(STATUS "Solver execution: single-threaded")

@@ -41,9 +41,6 @@ jobs:
               --time-limit 10 \
               --output-dir "relative output"
           )
-          ./code/scripts/run_parallel.sh \
-            --check-only \
-            --output-dir "build/parallel launcher (smoke)&test"
       - name: Test Windows examples
         if: runner.os == 'Windows'
         shell: cmd
@@ -56,11 +53,5 @@ jobs:
         if: runner.os == 'Windows'
         shell: cmd
         run: |
-          call code\scripts\run_batch.bat --problem bpp-p --input data\instances\otto\n_0020\instance_n=20_1.txt --time-limit 10 --output-dir "build\batch launcher smoke" --check-only
-          if errorlevel 1 exit /b 1
-      - name: Test Windows parallel launcher
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: |
-          call code\scripts\run_parallel.bat --check-only --output-dir "build\parallel launcher (smoke)&test"
+          call code\scripts\run_batch.bat --problem bpp-p --input data\instances\otto\n_0020\instance_n=20_1.txt --time-limit 10 --output-dir "build\batch launcher smoke"
           if errorlevel 1 exit /b 1

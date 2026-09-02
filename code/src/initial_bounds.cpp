@@ -4,6 +4,9 @@
 #include "precpack/bbr.hpp"
 #include "precpack/exact_arithmetic.hpp"
 
+#include "bppp_flow_bound.hpp"
+#include "window_dff.hpp"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -343,46 +346,6 @@ struct WorkInstance {
     std::vector<int> back;
 };
 
-class JavaPathCollector {
-public:
-    JavaPathCollector(const std::vector<std::vector<int>>& successors,
-                      std::vector<std::uint32_t>& visited,
-                      std::uint32_t stamp,
-                      int end,
-                      std::vector<int>& nodes)
-        : successors_(successors),
-          visited_(visited),
-          stamp_(stamp),
-          end_(end),
-          nodes_(nodes) {}
-
-    [[nodiscard]] bool find(int current) {
-        bool reaches_end = false;
-        for (const int next : successors_[static_cast<std::size_t>(current)]) {
-            if (next > end_) {
-                break;
-            }
-            if (next == end_) {
-                reaches_end = true;
-                break;
-            }
-            if (visited_[static_cast<std::size_t>(next)] != stamp_ && find(next)) {
-                nodes_.push_back(next);
-                reaches_end = true;
-            }
-        }
-        visited_[static_cast<std::size_t>(current)] = stamp_;
-        return reaches_end;
-    }
-
-private:
-    const std::vector<std::vector<int>>& successors_;
-    std::vector<std::uint32_t>& visited_;
-    std::uint32_t stamp_;
-    int end_;
-    std::vector<int>& nodes_;
-};
-
 [[nodiscard]] std::vector<std::uint64_t> compute_reachability(
     const WorkInstance& instance) {
     const std::size_t blocks = (static_cast<std::size_t>(instance.n) + 63U) / 64U;
@@ -412,21 +375,43 @@ private:
     const std::size_t blocks =
         (static_cast<std::size_t>(instance.n) + 63U) / 64U;
     const std::vector<std::uint64_t> reachable = compute_reachability(instance);
-    std::vector<std::vector<int>> successors(static_cast<std::size_t>(instance.n));
-    for (int item = 0; item < instance.n; ++item) {
-        auto& list = successors[static_cast<std::size_t>(item)];
-        list.reserve(static_cast<std::size_t>(
-            instance.succ_offset[static_cast<std::size_t>(item + 1)] -
-            instance.succ_offset[static_cast<std::size_t>(item)]));
-        for (int p = instance.succ_offset[static_cast<std::size_t>(item)];
-             p < instance.succ_offset[static_cast<std::size_t>(item + 1)]; ++p) {
-            list.push_back(instance.succ_to[static_cast<std::size_t>(p)]);
+    std::vector<std::uint64_t> reaching(
+        static_cast<std::size_t>(instance.n) * blocks, 0U);
+    for (int from = 0; from < instance.n; ++from) {
+        const std::uint64_t* row = reachable.data() +
+            static_cast<std::size_t>(from) * blocks;
+        for (std::size_t block = 0; block < blocks; ++block) {
+            std::uint64_t value = row[block];
+            while (value != 0U) {
+                const unsigned bit = std::countr_zero(value);
+                const int to = static_cast<int>(block * 64U + bit);
+                if (to < instance.n) {
+                    reaching[static_cast<std::size_t>(to) * blocks +
+                             static_cast<std::size_t>(from) / 64U] |=
+                        std::uint64_t{1} <<
+                        (static_cast<unsigned>(from) & 63U);
+                }
+                value &= value - 1U;
+            }
         }
     }
-    std::vector<std::uint32_t> visited(static_cast<std::size_t>(instance.n), 0U);
-    std::uint32_t stamp = 0U;
-    std::vector<int> path_nodes;
-    path_nodes.reserve(static_cast<std::size_t>(instance.n));
+    const std::size_t byte_segments =
+        (static_cast<std::size_t>(instance.n) + 7U) / 8U;
+    std::vector<std::int64_t> weight_lookup(byte_segments * 256U, 0);
+    for (std::size_t segment = 0; segment < byte_segments; ++segment) {
+        std::int64_t* table = weight_lookup.data() + segment * 256U;
+        for (unsigned value = 1; value < 256U; ++value) {
+            const unsigned previous = value & (value - 1U);
+            const unsigned bit = std::countr_zero(value);
+            const std::size_t item = segment * 8U + bit;
+            table[value] = table[previous];
+            if (item < static_cast<std::size_t>(instance.n)) {
+                table[value] = exact_arithmetic::checked_add(
+                    table[value], instance.items[item].weight,
+                    "precedence interval weight overflow");
+            }
+        }
+    }
     for (int i = 0; i < instance.n; ++i) {
         const std::uint64_t* reachable_i =
             reachable.data() + static_cast<std::size_t>(i) * blocks;
@@ -451,26 +436,25 @@ private:
                  1U) == 0U) {
                 continue;
             }
-            if (++stamp == 0U) {
-                std::fill(visited.begin(), visited.end(), 0U);
-                stamp = 1U;
-            }
-            path_nodes.clear();
-            JavaPathCollector collector(successors, visited, stamp, j, path_nodes);
-            static_cast<void>(collector.find(i));
-            if (path_nodes.empty()) {
-                continue;
-            }
             std::int64_t total =
                 static_cast<std::int64_t>(instance.items[static_cast<std::size_t>(i)].weight) +
                 instance.items[static_cast<std::size_t>(j)].weight;
-            for (const int item : path_nodes) {
-                total += instance.items[static_cast<std::size_t>(item)].weight;
+            const std::uint64_t* reaching_j = reaching.data() +
+                static_cast<std::size_t>(j) * blocks;
+            for (std::size_t segment = 0; segment < byte_segments; ++segment) {
+                const std::size_t block = segment >> 3U;
+                const unsigned shift =
+                    static_cast<unsigned>(segment & 7U) * 8U;
+                const unsigned value = static_cast<unsigned>(
+                    (reachable_i[block] & reaching_j[block]) >> shift) &
+                    0xffU;
+                total = exact_arithmetic::checked_add(
+                    total, weight_lookup[segment * 256U + value],
+                    "precedence interval weight overflow");
             }
             const int index = static_cast<int>(instance.arcs.size());
             instance.arcs.push_back(Arc{i, j, ceil_div(total, instance.capacity) - 1});
             instance.edge_index[static_cast<std::size_t>(i) * instance.n + j] = index;
-            successors[static_cast<std::size_t>(i)].push_back(j);
             changed = true;
         }
     }
@@ -940,6 +924,7 @@ void preprocess(WorkInstance& instance) {
 struct CertifiedBounds {
     int capacity = 0;
     int precedence_path = 0;
+    int bppp_flow = 0;
     int window_dff = 0;
 };
 
@@ -1321,48 +1306,6 @@ template <typename WeightAt>
         }
         lower_bound = std::max(
             lower_bound, transformed_ratio.ceil_to_int());
-    }
-    return lower_bound;
-}
-
-[[nodiscard]] int dff_lower_bound(const std::vector<int>& selected,
-                                  const WorkInstance& instance) {
-    return exact_dff_lower_bound(
-        selected.size(), instance.capacity, [&](std::size_t position) {
-            const int item = selected[position];
-            return instance.items[static_cast<std::size_t>(item)].weight;
-        });
-}
-
-[[nodiscard]] int compute_window_dff_lower_bound(
-    const WorkInstance& instance) {
-    int longest = 0;
-    for (const int value : instance.front) {
-        longest = std::max(longest, value);
-    }
-    int lower_bound = 1;
-    std::vector<int> front_items;
-    std::vector<int> selected;
-    front_items.reserve(static_cast<std::size_t>(instance.n));
-    selected.reserve(static_cast<std::size_t>(instance.n));
-    for (int g = 1; g <= longest; ++g) {
-        front_items.clear();
-        for (int item = 0; item < instance.n; ++item) {
-            if (instance.front[static_cast<std::size_t>(item)] >= g) {
-                front_items.push_back(item);
-            }
-        }
-        for (int h = 1; h <= longest - g; ++h) {
-            selected.clear();
-            for (const int item : front_items) {
-                if (instance.back[static_cast<std::size_t>(item)] >= h) {
-                    selected.push_back(item);
-                }
-            }
-            const int dff_bound = dff_lower_bound(selected, instance);
-            const int candidate = g + h + dff_bound;
-            lower_bound = std::max(lower_bound, candidate);
-        }
     }
     return lower_bound;
 }
@@ -1891,7 +1834,11 @@ public:
         cooldown_levels_ = std::max(0, maximum_separation - 1);
         key_words_ = blocks_ * static_cast<std::size_t>(1 + cooldown_levels_);
         probe_key_.assign(key_words_, 0U);
+#ifndef NDEBUG
+        reference_key_.assign(key_words_, 0U);
+#endif
         build_zero_successors();
+        build_successors_above();
         build_branch_order();
         branch_rank_.resize(static_cast<std::size_t>(instance_.n));
         for (int rank = 0; rank < instance_.n; ++rank) {
@@ -1936,8 +1883,6 @@ public:
             return lhs_tail != rhs_tail ? lhs_tail > rhs_tail : lhs < rhs;
         });
 
-        current_bins_.reserve(static_cast<std::size_t>(kAlpha) * instance_.n);
-        next_bins_.reserve(static_cast<std::size_t>(kAlpha) * instance_.n);
         current_weights_.reserve(kAlpha);
         next_weights_.reserve(kAlpha);
         current_counts_.reserve(kAlpha);
@@ -1947,6 +1892,8 @@ public:
         local_candidates_.reserve(kBeta);
         local_loads_.assign(static_cast<std::size_t>(kBeta) * blocks_, 0U);
         candidate_order_.reserve(static_cast<std::size_t>(kAlpha) * kBeta);
+        current_keys_.reserve(static_cast<std::size_t>(kAlpha) * key_words_);
+        next_keys_.reserve(static_cast<std::size_t>(kAlpha) * key_words_);
         selected_keys_.reserve(static_cast<std::size_t>(kAlpha) * key_words_);
         selected_hashes_.reserve(kAlpha);
         selected_slots_.assign(2048U, -1);
@@ -1954,9 +1901,24 @@ public:
 
     [[nodiscard]] HeuristicState solve(const HeuristicState& initial) {
         incumbent_ = initial;
-        current_bins_.assign(static_cast<std::size_t>(instance_.n), -1);
+        compact_bins_ = initial.bin_count <=
+            static_cast<int>(std::numeric_limits<std::uint16_t>::max());
+        const std::size_t reserved_bins =
+            static_cast<std::size_t>(kAlpha) * instance_.n;
+        if (compact_bins_) {
+            current_bins_compact_.reserve(reserved_bins);
+            next_bins_compact_.reserve(reserved_bins);
+            current_bins_compact_.assign(
+                static_cast<std::size_t>(instance_.n), 0U);
+        } else {
+            current_bins_wide_.reserve(reserved_bins);
+            next_bins_wide_.reserve(reserved_bins);
+            current_bins_wide_.assign(
+                static_cast<std::size_t>(instance_.n), -1);
+        }
         current_weights_.assign(1U, 0);
         current_counts_.assign(1U, 0);
+        current_keys_.assign(key_words_, 0U);
         int state_count = 1;
         int depth = 0;
         states_kept_ = 1;
@@ -1998,6 +1960,7 @@ private:
         int bound = 0;
         std::int64_t idle = 0;
         int assigned_count = 0;
+        int load_weight = 0;
         std::int64_t machine_numerator = 0;
         int longest_tail = 0;
         std::uint64_t serial = 0;
@@ -2125,6 +2088,25 @@ private:
         }
     }
 
+    void build_successors_above() {
+        successors_above_.assign(
+            static_cast<std::size_t>(cooldown_levels_) * instance_.n *
+                blocks_,
+            0U);
+        for (const Arc& arc : instance_.arcs) {
+            for (int level = 1; level <= cooldown_levels_; ++level) {
+                if (arc.separation <= level) {
+                    continue;
+                }
+                std::uint64_t* row = successors_above_.data() +
+                    (static_cast<std::size_t>(level - 1) * instance_.n +
+                     arc.from) *
+                        blocks_;
+                set_bit(row, arc.to);
+            }
+        }
+    }
+
     void build_branch_order() {
         const std::vector<std::uint64_t> reachability =
             compute_reachability(instance_);
@@ -2196,11 +2178,65 @@ private:
         });
     }
 
+    [[nodiscard]] int current_parent_bin(int item) const noexcept {
+        if (!compact_bins_) {
+            return current_parent_bins_wide_[item];
+        }
+        const std::uint16_t encoded = current_parent_bins_compact_[item];
+        return encoded == 0U ? -1 : static_cast<int>(encoded) - 1;
+    }
+
+    void copy_parent_bins(int parent, int* destination) const noexcept {
+        const std::size_t row =
+            static_cast<std::size_t>(parent) * instance_.n;
+        if (!compact_bins_) {
+            std::copy(current_bins_wide_.data() + row,
+                      current_bins_wide_.data() + row + instance_.n,
+                      destination);
+            return;
+        }
+        const std::uint16_t* source = current_bins_compact_.data() + row;
+        for (int item = 0; item < instance_.n; ++item) {
+            const std::uint16_t encoded = source[item];
+            destination[item] =
+                encoded == 0U ? -1 : static_cast<int>(encoded) - 1;
+        }
+    }
+
+    void append_next_bins(const int* bins) {
+        if (!compact_bins_) {
+            next_bins_wide_.insert(next_bins_wide_.end(), bins,
+                                   bins + instance_.n);
+            return;
+        }
+        for (int item = 0; item < instance_.n; ++item) {
+            const int bin = bins[item];
+            if (bin < 0) {
+                next_bins_compact_.push_back(0U);
+                continue;
+            }
+            const std::uint64_t encoded =
+                static_cast<std::uint64_t>(bin) + 1U;
+            if (encoded > std::numeric_limits<std::uint16_t>::max()) {
+                throw std::logic_error(
+                    "bounded-DP bin index exceeded compact storage");
+            }
+            next_bins_compact_.push_back(
+                static_cast<std::uint16_t>(encoded));
+        }
+    }
+
     void enumerate_parent(int parent, int depth) {
         current_parent_ = parent;
         current_depth_ = depth;
-        current_parent_bins_ = current_bins_.data() +
+        const std::size_t row =
             static_cast<std::size_t>(parent) * instance_.n;
+        current_parent_bins_compact_ = compact_bins_
+            ? current_bins_compact_.data() + row
+            : nullptr;
+        current_parent_bins_wide_ = compact_bins_
+            ? nullptr
+            : current_bins_wide_.data() + row;
         current_parent_weight_ =
             current_weights_[static_cast<std::size_t>(parent)];
         current_parent_count_ = current_counts_[static_cast<std::size_t>(parent)];
@@ -2222,7 +2258,7 @@ private:
         root_has_ready_ = false;
 
         for (int item = 0; item < instance_.n; ++item) {
-            if (current_parent_bins_[item] >= 0) {
+            if (current_parent_bin(item) >= 0) {
                 continue;
             }
             bool blocked = false;
@@ -2237,7 +2273,7 @@ private:
                 const int separation = instance_.arcs[static_cast<std::size_t>(
                     instance_.pred_arc[static_cast<std::size_t>(position)])]
                                            .separation;
-                const int predecessor_bin = current_parent_bins_[predecessor];
+                const int predecessor_bin = current_parent_bin(predecessor);
                 if (predecessor_bin < 0) {
                     if (separation == 0) {
                         ++pending_zero;
@@ -2365,8 +2401,11 @@ private:
             current_parent_weight_ + current_load_weight_;
         if (child_count == instance_.n) {
             if (child_depth < incumbent_.bin_count) {
-                incumbent_.bin.assign(current_parent_bins_,
-                                      current_parent_bins_ + instance_.n);
+                incumbent_.bin.resize(static_cast<std::size_t>(instance_.n));
+                for (int item = 0; item < instance_.n; ++item) {
+                    incumbent_.bin[static_cast<std::size_t>(item)] =
+                        current_parent_bin(item);
+                }
                 for (int item = 0; item < instance_.n; ++item) {
                     if (bit_is_set(load_mask_.data(), item)) {
                         incumbent_.bin[static_cast<std::size_t>(item)] =
@@ -2385,7 +2424,7 @@ private:
         std::int64_t machine_numerator = 0;
         int longest_tail = 0;
         for (const int item : tail_order_) {
-            if (current_parent_bins_[item] >= 0 ||
+            if (current_parent_bin(item) >= 0 ||
                 bit_is_set(load_mask_.data(), item)) {
                 continue;
             }
@@ -2411,6 +2450,7 @@ private:
             static_cast<std::int64_t>(child_depth) * instance_.capacity -
             child_weight;
         candidate.assigned_count = child_count;
+        candidate.load_weight = current_load_weight_;
         candidate.machine_numerator = machine_numerator;
         candidate.longest_tail = longest_tail;
         candidate.serial = next_serial_++;
@@ -2448,11 +2488,49 @@ private:
         }
     }
 
-    void build_key(const int* bins, int depth) {
-        std::fill(probe_key_.begin(), probe_key_.end(), 0U);
+    void build_child_key(const std::uint64_t* parent_key,
+                         const std::uint64_t* load) {
+        std::uint64_t* assigned = probe_key_.data();
+        for (std::size_t block = 0; block < blocks_; ++block) {
+            assigned[block] = parent_key[block] | load[block];
+        }
+        for (int level = 0; level < cooldown_levels_; ++level) {
+            std::uint64_t* destination = probe_key_.data() +
+                static_cast<std::size_t>(level + 1) * blocks_;
+            const std::uint64_t* shifted =
+                level + 1 < cooldown_levels_
+                    ? parent_key +
+                          static_cast<std::size_t>(level + 2) * blocks_
+                    : nullptr;
+            for (std::size_t block = 0; block < blocks_; ++block) {
+                destination[block] = shifted == nullptr ? 0U : shifted[block];
+            }
+            for (std::size_t block = 0; block < blocks_; ++block) {
+                std::uint64_t value = load[block];
+                while (value != 0U) {
+                    const unsigned bit = std::countr_zero(value);
+                    const int item = static_cast<int>(block * 64U + bit);
+                    const std::uint64_t* successors = successors_above_.data() +
+                        (static_cast<std::size_t>(level) * instance_.n + item) *
+                            blocks_;
+                    for (std::size_t word = 0; word < blocks_; ++word) {
+                        destination[word] |= successors[word];
+                    }
+                    value &= value - 1U;
+                }
+            }
+            for (std::size_t block = 0; block < blocks_; ++block) {
+                destination[block] &= ~assigned[block];
+            }
+        }
+    }
+
+    void build_key_from_bins(const int* bins, int depth,
+                             std::uint64_t* destination) {
+        std::fill(destination, destination + key_words_, 0U);
         for (int item = 0; item < instance_.n; ++item) {
             if (bins[item] >= 0) {
-                set_bit(probe_key_.data(), item);
+                set_bit(destination, item);
                 continue;
             }
             int remaining_wait = 0;
@@ -2474,8 +2552,8 @@ private:
                     separation - (depth - bins[predecessor]));
             }
             for (int level = 1;
-                 level <= std::min(remaining_wait, cooldown_levels_); ++level) {
-                set_bit(probe_key_.data() +
+                level <= std::min(remaining_wait, cooldown_levels_); ++level) {
+                set_bit(destination +
                             static_cast<std::size_t>(level) * blocks_,
                         item);
             }
@@ -2515,9 +2593,14 @@ private:
                 stage_candidates_[static_cast<std::size_t>(lhs)],
                 stage_candidates_[static_cast<std::size_t>(rhs)]);
         });
-        next_bins_.clear();
+        if (compact_bins_) {
+            next_bins_compact_.clear();
+        } else {
+            next_bins_wide_.clear();
+        }
         next_weights_.clear();
         next_counts_.clear();
+        next_keys_.clear();
         selected_keys_.clear();
         selected_hashes_.clear();
         std::fill(selected_slots_.begin(), selected_slots_.end(), -1);
@@ -2528,35 +2611,50 @@ private:
             }
             const Candidate& candidate =
                 stage_candidates_[static_cast<std::size_t>(candidate_index)];
-            const int* parent_bins = current_bins_.data() +
-                static_cast<std::size_t>(candidate.parent) * instance_.n;
-            std::copy(parent_bins, parent_bins + instance_.n,
-                      probe_bins_.begin());
+            copy_parent_bins(candidate.parent, probe_bins_.data());
             const std::uint64_t* load = stage_loads_.data() +
                 static_cast<std::size_t>(candidate_index) * blocks_;
-            int load_weight = 0;
-            for (int item = 0; item < instance_.n; ++item) {
-                if (bit_is_set(load, item)) {
-                    probe_bins_[static_cast<std::size_t>(item)] = child_depth - 1;
-                    load_weight +=
-                        instance_.items[static_cast<std::size_t>(item)].weight;
+            for (std::size_t block = 0; block < blocks_; ++block) {
+                std::uint64_t value = load[block];
+                while (value != 0U) {
+                    const unsigned bit = std::countr_zero(value);
+                    const int item = static_cast<int>(block * 64U + bit);
+                    probe_bins_[static_cast<std::size_t>(item)] =
+                        child_depth - 1;
+                    value &= value - 1U;
                 }
             }
-            build_key(probe_bins_.data(), child_depth);
+            const std::uint64_t* parent_key = current_keys_.data() +
+                static_cast<std::size_t>(candidate.parent) * key_words_;
+            build_child_key(parent_key, load);
+#ifndef NDEBUG
+            build_key_from_bins(probe_bins_.data(), child_depth,
+                                reference_key_.data());
+            if (probe_key_ != reference_key_) {
+                throw std::logic_error(
+                    "bounded-DP incremental key differs from reconstruction");
+            }
+#endif
             if (!insert_selected_key(hash_key(probe_key_.data()))) {
                 continue;
             }
-            next_bins_.insert(next_bins_.end(), probe_bins_.begin(),
-                              probe_bins_.end());
+            append_next_bins(probe_bins_.data());
+            next_keys_.insert(next_keys_.end(), probe_key_.begin(),
+                              probe_key_.end());
             next_weights_.push_back(
                 current_weights_[static_cast<std::size_t>(candidate.parent)] +
-                load_weight);
+                candidate.load_weight);
             next_counts_.push_back(candidate.assigned_count);
         }
         states_kept_ += next_weights_.size();
-        current_bins_.swap(next_bins_);
+        if (compact_bins_) {
+            current_bins_compact_.swap(next_bins_compact_);
+        } else {
+            current_bins_wide_.swap(next_bins_wide_);
+        }
         current_weights_.swap(next_weights_);
         current_counts_.swap(next_counts_);
+        current_keys_.swap(next_keys_);
         return static_cast<int>(current_weights_.size());
     }
 
@@ -2572,6 +2670,7 @@ private:
     std::vector<int> tail_order_;
     std::vector<int> zero_successor_offset_;
     std::vector<int> zero_successors_;
+    std::vector<std::uint64_t> successors_above_;
     std::vector<unsigned char> status_;
     std::vector<int> remaining_zero_predecessors_;
     std::vector<std::uint64_t> load_mask_;
@@ -2580,8 +2679,10 @@ private:
     std::vector<std::uint64_t> excluded_ready_item_mask_;
     std::vector<std::uint64_t> fit_item_masks_;
     bool fit_item_masks_available_ = false;
-    std::vector<int> current_bins_;
-    std::vector<int> next_bins_;
+    std::vector<std::uint16_t> current_bins_compact_;
+    std::vector<std::uint16_t> next_bins_compact_;
+    std::vector<int> current_bins_wide_;
+    std::vector<int> next_bins_wide_;
     std::vector<std::int64_t> current_weights_;
     std::vector<std::int64_t> next_weights_;
     std::vector<int> current_counts_;
@@ -2593,10 +2694,17 @@ private:
     std::vector<int> candidate_order_;
     std::vector<int> probe_bins_;
     std::vector<std::uint64_t> probe_key_;
+    std::vector<std::uint64_t> current_keys_;
+    std::vector<std::uint64_t> next_keys_;
+#ifndef NDEBUG
+    std::vector<std::uint64_t> reference_key_;
+#endif
     std::vector<std::uint64_t> selected_keys_;
     std::vector<std::uint64_t> selected_hashes_;
     std::vector<int> selected_slots_;
-    const int* current_parent_bins_ = nullptr;
+    const std::uint16_t* current_parent_bins_compact_ = nullptr;
+    const int* current_parent_bins_wide_ = nullptr;
+    bool compact_bins_ = true;
     int current_parent_ = -1;
     int current_depth_ = 0;
     std::int64_t current_parent_weight_ = 0;
@@ -3127,9 +3235,25 @@ InitialBoundsResult compute_initial_bounds(
     statistics.upper_bound_seconds +=
         std::chrono::duration<double>(Clock::now() - fit_start).count();
 
+    if (original.problem_type == "BPP-P" &&
+        incumbent.bin_count > result.lower_bound) {
+        const auto start = Clock::now();
+        bounds.bppp_flow =
+            internal::compute_bppp_flow_lower_bound(original);
+        result.lower_bound =
+            std::max(result.lower_bound, bounds.bppp_flow);
+        statistics.lower_bound_seconds +=
+            std::chrono::duration<double>(Clock::now() - start).count();
+    }
     if (incumbent.bin_count > result.lower_bound) {
         const auto start = Clock::now();
-        bounds.window_dff = compute_window_dff_lower_bound(working);
+        std::vector<int> weights;
+        weights.reserve(static_cast<std::size_t>(working.n));
+        for (const WorkItem& item : working.items) {
+            weights.push_back(item.weight);
+        }
+        bounds.window_dff = internal::compute_window_dff_lower_bound(
+            weights, working.front, working.back, working.capacity);
         result.lower_bound =
             std::max(result.lower_bound, bounds.window_dff);
         statistics.lower_bound_seconds +=
@@ -3168,7 +3292,6 @@ InitialBoundsResult compute_initial_bounds(
                 original, working, incumbent,
                 config.bbr_enable_structured_preprocessing);
             Config probe_config = config;
-            probe_config.threads = 1;
             probe_config.bbr_enable_root_strengthening = false;
             probe_config.bbr_enable_binlb = false;
             probe_config.bbr_enable_generalized_item_dominance = false;

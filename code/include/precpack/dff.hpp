@@ -26,4 +26,10 @@ struct DffTransformSet {
     int capacity,
     bool include_dff3_family = true);
 
+[[nodiscard]] DffTransformSet select_ranked_complete_dff_transforms(
+    const std::vector<int>& weights,
+    int capacity,
+    bool include_dff3_family,
+    std::size_t maximum_transforms);
+
 }

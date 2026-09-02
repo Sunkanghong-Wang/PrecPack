@@ -7,7 +7,7 @@ namespace precpack {
 
 class OutputLock {
 public:
-    explicit OutputLock(const std::filesystem::path& output_directory);
+    explicit OutputLock(const std::filesystem::path& result_path);
     ~OutputLock();
 
     OutputLock(const OutputLock&) = delete;

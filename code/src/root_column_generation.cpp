@@ -2,6 +2,8 @@
 
 #include "precpack/exact_arithmetic.hpp"
 
+#include "conflict_bin_packing.hpp"
+
 #include <gurobi_c++.h>
 
 #include "gurobi_compat.hpp"
@@ -79,8 +81,7 @@ struct ConflictGraph {
                                     0U);
     for (int lhs = 0; lhs < instance.size(); ++lhs) {
         for (int rhs = lhs + 1; rhs < instance.size(); ++rhs) {
-            if (instance.separation(lhs, rhs) > 0 ||
-                instance.separation(rhs, lhs) > 0) {
+            if (internal::items_have_same_bin_conflict(instance, lhs, rhs)) {
                 graph.neighbors[static_cast<std::size_t>(lhs)].push_back(rhs);
                 graph.neighbors[static_cast<std::size_t>(rhs)].push_back(lhs);
                 if (seen[static_cast<std::size_t>(lhs)] == 0U) {
@@ -1301,11 +1302,6 @@ void add_priced_patterns(PositionFreeMaster& master,
         initial_statistics.pricing_search_nodes;
     result.rmp_count = statistics.rmp_count - initial_statistics.rmp_count;
     result.rmp_objective_multiplier = master.objective_multiplier();
-    result.generated_precedence_rows =
-        statistics.generated_precedence_rows -
-        initial_statistics.generated_precedence_rows;
-    result.phase_one_count =
-        statistics.phase_one_count - initial_statistics.phase_one_count;
     result.pricing_seconds =
         statistics.pricing_seconds - initial_statistics.pricing_seconds;
     result.rmp_seconds =

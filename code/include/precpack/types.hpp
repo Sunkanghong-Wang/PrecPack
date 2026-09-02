@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -32,22 +33,48 @@ struct Instance {
     std::vector<Arc> arcs;
 
     std::int64_t total_weight = 0;
-    std::vector<std::vector<int>> predecessors;
-    std::vector<std::vector<int>> successors;
     std::vector<std::vector<std::pair<int, int>>> predecessor_arcs;
     std::vector<std::vector<std::pair<int, int>>> successor_arcs;
     std::vector<int> topological_order;
     std::vector<int> front;
     std::vector<int> back;
-    std::vector<int> longest_separation;
+    std::size_t reachability_blocks = 0;
+    std::vector<std::uint64_t> reachable;
+    std::vector<std::uint64_t> reaching;
+    std::vector<std::uint64_t> positive_reachable;
 
     [[nodiscard]] int size() const noexcept {
         return static_cast<int>(items.size());
     }
 
-    [[nodiscard]] int separation(int i, int j) const noexcept {
-        return longest_separation[static_cast<std::size_t>(i) * items.size() +
-                                  static_cast<std::size_t>(j)];
+    [[nodiscard]] bool has_positive_separation_path(
+        int i,
+        int j) const noexcept {
+        const std::size_t position =
+            static_cast<std::size_t>(i) * reachability_blocks +
+            static_cast<std::size_t>(j) / 64U;
+        return ((positive_reachable[position] >>
+                 (static_cast<unsigned>(j) & 63U)) &
+                1U) != 0U;
+    }
+
+    [[nodiscard]] bool reaches(int i, int j) const noexcept {
+        const std::size_t position =
+            static_cast<std::size_t>(i) * reachability_blocks +
+            static_cast<std::size_t>(j) / 64U;
+        return ((reachable[position] >>
+                 (static_cast<unsigned>(j) & 63U)) &
+                1U) != 0U;
+    }
+
+    [[nodiscard]] const std::uint64_t* reachable_row(int item) const noexcept {
+        return reachable.data() +
+               static_cast<std::size_t>(item) * reachability_blocks;
+    }
+
+    [[nodiscard]] const std::uint64_t* reaching_row(int item) const noexcept {
+        return reaching.data() +
+               static_cast<std::size_t>(item) * reachability_blocks;
     }
 
     void initialize();
@@ -70,14 +97,12 @@ enum class SolveStatus {
 struct Statistics {
     std::uint64_t explored_nodes = 0;
     std::uint64_t infeasible_nodes = 0;
-    std::uint64_t phase_one_count = 0;
     std::uint64_t pricing_search_nodes = 0;
     std::uint64_t rmp_count = 0;
     std::uint64_t pricing_count = 0;
     std::uint64_t cg_count = 0;
     std::uint64_t cg_iterations = 0;
     std::uint64_t generated_columns = 0;
-    std::uint64_t generated_precedence_rows = 0;
     std::uint64_t initial_bdp_states = 0;
     std::uint64_t initial_bdp_transitions = 0;
 
@@ -104,8 +129,6 @@ struct RootStatistics {
     std::uint64_t pricing_count = 0;
     std::uint64_t pricing_search_nodes = 0;
     std::uint64_t rmp_count = 0;
-    std::uint64_t generated_precedence_rows = 0;
-    std::uint64_t phase_one_count = 0;
     std::uint64_t fixed_point_scale_min = 0;
     std::uint64_t fixed_point_scale_max = 0;
     std::uint64_t certificate_scale_min = 0;
@@ -119,8 +142,6 @@ struct BbrStatistics {
     bool attempted = false;
     bool timed_out = false;
     bool memory_limited = false;
-    bool parallel = false;
-    bool shared_memory_saturated = false;
     bool reverse_direction = false;
     bool exact_phase_attempted = false;
     bool item_dominance_enabled = false;
@@ -128,6 +149,7 @@ struct BbrStatistics {
     bool paper_queue_order_enabled = false;
     bool complete_dff_enabled = false;
     bool binlb_enabled = false;
+    bool conflict_binlb_enabled = false;
     bool structured_preprocessing_enabled = false;
     std::uint64_t states_created = 0;
     std::uint64_t states_expanded = 0;
@@ -169,10 +191,19 @@ struct BbrStatistics {
     std::uint64_t binlb_loads = 0;
     std::uint64_t binlb_memo_hits = 0;
     std::uint64_t binlb_memo_entries = 0;
+    std::uint64_t binlb_target_hits = 0;
+    std::uint64_t binlb_conflict_edges = 0;
+    std::uint64_t binlb_conflict_calls = 0;
+    std::uint64_t binlb_conflict_completed = 0;
+    std::uint64_t binlb_conflict_search_nodes = 0;
+    std::uint64_t binlb_conflict_loads = 0;
+    std::uint64_t binlb_conflict_memo_hits = 0;
+    std::uint64_t binlb_ordinary_memo_hits = 0;
     std::uint64_t binlb_node_limit = 0;
     std::uint64_t binlb_load_limit = 0;
     std::uint64_t binlb_memo_limit = 0;
     int binlb_max_items = 0;
+    std::uint64_t conflict_binlb_node_limit = 0;
     std::uint64_t incumbent_updates = 0;
     std::uint64_t dff_transform_count = 0;
     std::uint64_t structured_items_removed = 0;
@@ -181,40 +212,19 @@ struct BbrStatistics {
     std::uint64_t structured_suffix_bins = 0;
     std::uint64_t structured_fixed_bins = 0;
     std::uint64_t structured_search_items = 0;
-    std::uint64_t parallel_tasks_generated = 0;
-    std::uint64_t parallel_tasks_completed = 0;
-    std::uint64_t parallel_tasks_stolen = 0;
-    std::uint64_t shared_exact_memory_prunes = 0;
-    std::uint64_t shared_profile_dominance_prunes = 0;
-    std::uint64_t shared_superset_memory_prunes = 0;
-    std::uint64_t parallel_shared_peak_memory_bytes = 0;
-    std::uint64_t parallel_worker_peak_memory_bytes = 0;
-    std::uint64_t parallel_task_memory_bytes = 0;
-    std::uint64_t parallel_worker_tasks_min = 0;
-    std::uint64_t parallel_worker_tasks_max = 0;
-    std::uint64_t parallel_worker_expanded_min = 0;
-    std::uint64_t parallel_worker_expanded_max = 0;
-    std::uint64_t parallel_initial_work_min = 0;
-    std::uint64_t parallel_initial_work_max = 0;
-
     std::uint64_t peak_memory_bytes = 0;
     std::uint64_t memory_limit_bytes = 0;
     bool initial_bdp_enabled = true;
     int seed = 1;
-    int requested_threads = 1;
-    int threads = 1;
     double time_limit_seconds = 0.0;
     double initialization_time_limit_seconds = 0.0;
     double search_seconds = 0.0;
     double exact_search_seconds = 0.0;
-    double parallel_split_seconds = 0.0;
-    double parallel_worker_busy_seconds_sum = 0.0;
-    double parallel_worker_busy_seconds_min = 0.0;
-    double parallel_worker_busy_seconds_max = 0.0;
     double generalized_item_dominance_seconds = 0.0;
     double binlb_seconds = 0.0;
     double binlb_call_time_limit_seconds = 0.0;
     double binlb_total_time_limit_seconds = 0.0;
+    double conflict_binlb_call_time_limit_seconds = 0.0;
 };
 
 struct Solution {
@@ -228,17 +238,14 @@ struct Solution {
     Statistics stats;
     BbrStatistics bbr_stats;
     RootStatistics root_stats;
-    int threads = 1;
 };
 
 struct Config {
     double time_limit_seconds = 300.0;
     double initialization_time_limit_seconds = 0.0;
     int seed = 1;
-    // -1 uses available hardware concurrency; 1 preserves serial BBR.
-    int threads = 1;
     bool require_gurobi_runtime = false;
-    // The memory limit is global across all BBR workers.
+    // The memory limit applies to the complete BBR search.
     std::uint64_t bbr_memory_limit_mb = 24ULL * 1024ULL;
     bool bbr_enable_early_exact_probe = true;
     bool bbr_enable_initial_bdp = true;
@@ -258,20 +265,18 @@ struct Config {
     bool bbr_enable_closure_bound = true;
     bool bbr_enable_structured_preprocessing = true;
     bool bbr_enable_binlb = false;
+    bool bbr_enable_conflict_binlb = false;
     double bbr_binlb_call_time_limit_seconds = 1.0;
     double bbr_binlb_total_time_limit_seconds = 1.0;
     std::uint64_t bbr_binlb_node_limit = 250'000U;
     std::uint64_t bbr_binlb_load_limit = 50U;
     std::uint64_t bbr_binlb_memo_limit = 200'000U;
     int bbr_binlb_max_items = 400;
+    double bbr_conflict_binlb_call_time_limit_seconds = 0.005;
+    std::uint64_t bbr_conflict_binlb_node_limit = 50'000U;
     bool bbr_enable_root_strengthening = true;
-    double bbr_root_cg_time_limit_seconds = 5.0;
     bool bbr_initialization_mode = false;
-    int max_precedence_rows_per_round = 64;
     int max_cg_iterations = 10'000;
-    int max_columns_per_pricing = 8;
-    double reduced_cost_tolerance = 1e-8;
-    double row_violation_tolerance = 1e-8;
 };
 
 class Deadline {

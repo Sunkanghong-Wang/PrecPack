@@ -19,15 +19,18 @@ struct CommandLineOptions {
     ProblemKind problem = ProblemKind::kBppGp;
     double time_limit_seconds = 300.0;
     std::uint64_t memory_limit_mb = 24ULL * 1024ULL;
-    int threads = 1;
+    bool time_limit_was_set = false;
     bool batch_mode = false;
-    bool check_only = false;
     bool show_help = false;
 };
 
 [[nodiscard]] CommandLineOptions parse_command_line(
     int argc,
     char* const argv[]);
+
+[[nodiscard]] Config make_command_line_solver_config(
+    const CommandLineOptions& options,
+    double time_limit_seconds);
 
 void print_help(std::ostream& output, std::string_view executable);
 

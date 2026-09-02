@@ -1,14 +1,8 @@
 #include "precpack/result_io.hpp"
 
-#include "precpack/build_config.hpp"
-
-#include "environment.hpp"
-
-#include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
-#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -26,11 +20,9 @@ namespace precpack {
 namespace {
 
 inline constexpr const char* kResultHeader =
-    "instance_key,problem,instance_file,graph_file,n,capacity,status,"
-    "lower_bound,upper_bound,gap,time_seconds,time_limit_seconds,threads,"
-    "memory_limit_mb,bbr_peak_memory_bytes,gurobi_enabled,"
-    "gurobi_required,solution_file";
-inline constexpr std::size_t kResultColumnCount = 18U;
+    "instance_set,instance,n,time_limit_seconds,memory_limit_mb,status,opt,"
+    "lower_bound,upper_bound,time_seconds,"
+    "bbr_peak_memory_bytes,bbr_states_created";
 
 class TemporaryFileGuard {
 public:
@@ -105,56 +97,21 @@ void replace_file(const std::filesystem::path& source,
     return escaped;
 }
 
-[[nodiscard]] std::string recorded_path(const std::filesystem::path& path) {
-    if (path.empty()) {
-        return {};
-    }
-    const std::filesystem::path normalized = path.lexically_normal();
-    if (!normalized.is_absolute()) {
-        return normalized.generic_string();
-    }
-
-    std::error_code error;
-    std::filesystem::path current;
-    const std::optional<std::string> repository =
-        internal::environment_value("PRECPACK_REPOSITORY_ROOT");
-    if (repository.has_value()) {
-        current =
-            std::filesystem::absolute(*repository, error).lexically_normal();
-    } else {
-        current = std::filesystem::current_path(error).lexically_normal();
-    }
-    if (!error) {
-        const std::filesystem::path relative =
-            normalized.lexically_relative(current);
-        const auto first = relative.begin();
-        if (!relative.empty() && first != relative.end() && *first != "..") {
-            return relative.generic_string();
+[[nodiscard]] std::filesystem::path parent_below(
+    const std::filesystem::path& file,
+    std::string_view anchor) {
+    const std::filesystem::path parent =
+        file.lexically_normal().parent_path();
+    bool below_anchor = false;
+    std::filesystem::path result;
+    for (const std::filesystem::path& component : parent) {
+        if (below_anchor) {
+            result /= component;
+        } else if (component == std::filesystem::path(anchor)) {
+            below_anchor = true;
         }
     }
-    return normalized.generic_string();
-}
-
-[[nodiscard]] std::string sanitize_filename(std::string value) {
-    for (char& character : value) {
-        const bool alphanumeric =
-            (character >= '0' && character <= '9') ||
-            (character >= 'A' && character <= 'Z') ||
-            (character >= 'a' && character <= 'z');
-        if (!alphanumeric && character != '-' && character != '_' &&
-            character != '.') {
-            character = '_';
-        }
-    }
-    return value.empty() ? "instance" : value;
-}
-
-void update_path_hash(std::uint64_t& hash, std::string_view value) noexcept {
-    constexpr std::uint64_t kFnvPrime = 1'099'511'628'211ULL;
-    for (const unsigned char byte : value) {
-        hash ^= byte;
-        hash *= kFnvPrime;
-    }
+    return below_anchor ? result : std::filesystem::path{};
 }
 
 void require_compatible_header(const std::filesystem::path& path) {
@@ -174,140 +131,37 @@ void require_compatible_header(const std::filesystem::path& path) {
     }
 }
 
-bool read_csv_record(std::istream& input, std::vector<std::string>& fields) {
-    fields.clear();
-    std::string field;
-    bool quoted = false;
-    bool quote_closed = false;
-    bool consumed = false;
-    char character = '\0';
-    while (input.get(character)) {
-        consumed = true;
-        if (quoted) {
-            if (character != '"') {
-                field += character;
-                continue;
-            }
-            if (input.peek() == '"') {
-                static_cast<void>(input.get(character));
-                field += '"';
-                continue;
-            }
-            quoted = false;
-            quote_closed = true;
-            continue;
-        }
-        if (character == ',') {
-            fields.push_back(std::move(field));
-            field.clear();
-            quote_closed = false;
-        } else if (character == '\n' || character == '\r') {
-            if (character == '\r' && input.peek() == '\n') {
-                static_cast<void>(input.get(character));
-            }
-            fields.push_back(std::move(field));
-            return true;
-        } else if (character == '"') {
-            if (!field.empty() || quote_closed) {
-                throw std::runtime_error("malformed quoted CSV field");
-            }
-            quoted = true;
-        } else {
-            if (quote_closed) {
-                throw std::runtime_error(
-                    "unexpected characters after a quoted CSV field");
-            }
-            field += character;
-        }
-    }
-    if (quoted) {
-        throw std::runtime_error("unterminated quoted CSV field");
-    }
-    if (!consumed && field.empty() && fields.empty()) {
-        return false;
-    }
-    fields.push_back(std::move(field));
-    return true;
 }
 
-[[nodiscard]] std::uint64_t parse_unsigned_csv_field(
-    const std::string& value,
-    std::string_view column,
-    std::size_t row,
-    const std::filesystem::path& path) {
-    std::size_t parsed = 0U;
-    std::uint64_t result = 0U;
-    bool converted = true;
-    try {
-        result = std::stoull(value, &parsed);
-    } catch (const std::exception&) {
-        converted = false;
-    }
-    if (!converted || value.empty() || value.front() == '-' ||
-        value.front() == '+' || parsed != value.size()) {
-        throw std::runtime_error(
-            "invalid " + std::string(column) + " in result CSV row " +
-            std::to_string(row) + ": " + path.string());
-    }
-    return result;
-}
-
-[[nodiscard]] double parse_double_csv_field(
-    const std::string& value,
-    std::string_view column,
-    std::size_t row,
-    const std::filesystem::path& path) {
-    std::size_t parsed = 0U;
-    double result = 0.0;
-    bool converted = true;
-    try {
-        result = std::stod(value, &parsed);
-    } catch (const std::exception&) {
-        converted = false;
-    }
-    if (!converted || value.empty() || parsed != value.size() ||
-        !std::isfinite(result)) {
-        throw std::runtime_error(
-            "invalid " + std::string(column) + " in result CSV row " +
-            std::to_string(row) + ": " + path.string());
-    }
-    return result;
-}
-
-}
-
-std::string make_instance_key(
+std::string make_instance_set(
     const std::filesystem::path& instance_path,
     const std::optional<std::filesystem::path>& graph_path) {
-    constexpr std::uint64_t kFnvOffsetBasis = 14'695'981'039'346'656'037ULL;
-    std::uint64_t hash = kFnvOffsetBasis;
-    update_path_hash(hash, recorded_path(instance_path));
-    update_path_hash(hash, std::string_view{"\0", 1});
+    std::filesystem::path result;
     if (graph_path.has_value()) {
-        update_path_hash(hash, recorded_path(*graph_path));
+        result = parent_below(*graph_path, "bpp-gp-graphs");
+        if (result.empty()) {
+            result = graph_path->parent_path().filename();
+        }
+    } else {
+        result = parent_below(instance_path, "instances");
+        if (result.empty()) {
+            result = instance_path.parent_path().filename();
+        }
     }
-
-    std::ostringstream key;
-    key << sanitize_filename(instance_path.stem().string()) << "__"
-        << std::hex << std::setfill('0') << std::setw(16) << hash;
-    return key.str();
+    return result.empty() ? "external" : result.generic_string();
 }
 
 void append_result_csv(const std::filesystem::path& path,
-                       std::string_view instance_key,
-                       const std::filesystem::path& instance_path,
-                       const std::optional<std::filesystem::path>& graph_path,
+                       std::string_view instance_set,
+                       std::string_view instance_name,
                        const Instance& instance,
-                       const Solution& solution,
-                       const std::filesystem::path& assignment_path) {
+                       const Solution& solution) {
     if (!path.parent_path().empty()) {
         std::filesystem::create_directories(path.parent_path());
     }
+    validate_result_csv(path);
     const bool needs_header = !std::filesystem::exists(path) ||
                               std::filesystem::file_size(path) == 0U;
-    if (!needs_header) {
-        require_compatible_header(path);
-    }
     std::ostringstream record;
     if (needs_header) {
         record << kResultHeader << '\n';
@@ -316,22 +170,15 @@ void append_result_csv(const std::filesystem::path& path,
     constexpr std::uint64_t kMegabyte = 1024ULL * 1024ULL;
     const std::uint64_t memory_limit_mb =
         solution.bbr_stats.memory_limit_bytes / kMegabyte;
-    record << std::setprecision(12) << csv_field(instance_key) << ','
-           << csv_field(instance.problem_type) << ','
-           << csv_field(recorded_path(instance_path)) << ','
-           << csv_field(graph_path.has_value()
-                            ? recorded_path(*graph_path)
-                            : std::string{})
-           << ',' << instance.size() << ',' << instance.capacity << ','
-           << to_string(solution.status) << ',' << solution.lower_bound << ','
-           << solution.upper_bound << ',' << solution.relative_gap << ','
+    record << std::setprecision(12) << csv_field(instance_set) << ','
+           << csv_field(instance_name) << ',' << instance.size() << ','
+           << solution.bbr_stats.time_limit_seconds << ',' << memory_limit_mb
+           << ',' << to_string(solution.status)
+           << ',' << (solution.status == SolveStatus::kOptimal ? 1 : 0) << ','
+           << solution.lower_bound << ',' << solution.upper_bound << ','
            << solution.stats.total_seconds << ','
-           << solution.bbr_stats.time_limit_seconds << ',' << solution.threads
-           << ',' << memory_limit_mb << ','
            << solution.bbr_stats.peak_memory_bytes << ','
-           << (kHasGurobiSupport ? 1 : 0) << ','
-           << (solution.gurobi_runtime_required ? 1 : 0) << ','
-           << csv_field(assignment_path.generic_string()) << '\n';
+           << solution.bbr_stats.states_created << '\n';
 
     const std::string serialized = record.str();
     std::ofstream output(path, std::ios::app | std::ios::binary);
@@ -344,6 +191,18 @@ void append_result_csv(const std::filesystem::path& path,
         throw std::runtime_error("cannot write result CSV: " + path.string());
     }
     finish_output(output, path, "result CSV");
+}
+
+void validate_result_csv(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) {
+        return;
+    }
+    if (!std::filesystem::is_regular_file(path)) {
+        throw std::runtime_error("result CSV is not a file: " + path.string());
+    }
+    if (std::filesystem::file_size(path) > 0U) {
+        require_compatible_header(path);
+    }
 }
 
 void write_assignment(const std::filesystem::path& path,
@@ -386,86 +245,12 @@ void write_assignment(const std::filesystem::path& path,
     temporary_file.release();
 }
 
-std::vector<ResultReference> read_result_references(
-    const std::filesystem::path& path) {
-    if (!std::filesystem::exists(path)) {
-        return {};
+bool has_nonempty_solution(const std::filesystem::path& path) {
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(path, error) || error) {
+        return false;
     }
-    if (!std::filesystem::is_regular_file(path)) {
-        throw std::runtime_error("result CSV is not a file: " + path.string());
-    }
-    if (std::filesystem::file_size(path) == 0U) {
-        return {};
-    }
-    require_compatible_header(path);
-
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error("cannot read result CSV: " + path.string());
-    }
-    std::string header;
-    std::getline(input, header);
-
-    std::vector<ResultReference> references;
-    std::vector<std::string> fields;
-    std::size_t row = 1U;
-    while (read_csv_record(input, fields)) {
-        ++row;
-        if (fields.size() != kResultColumnCount || fields.front().empty() ||
-            fields.back().empty()) {
-            throw std::runtime_error(
-                "malformed result CSV row " + std::to_string(row) + ": " +
-                path.string());
-        }
-        const std::uint64_t threads = parse_unsigned_csv_field(
-            fields[12], "threads", row, path);
-        if (threads == 0U ||
-            threads > static_cast<std::uint64_t>(
-                          std::numeric_limits<int>::max())) {
-            throw std::runtime_error(
-                "invalid threads in result CSV row " + std::to_string(row) +
-                ": " + path.string());
-        }
-        const std::uint64_t gurobi = parse_unsigned_csv_field(
-            fields[15], "gurobi_enabled", row, path);
-        if (gurobi > 1U) {
-            throw std::runtime_error(
-                "invalid gurobi_enabled in result CSV row " +
-                std::to_string(row) + ": " + path.string());
-        }
-        const std::uint64_t gurobi_required = parse_unsigned_csv_field(
-            fields[16], "gurobi_required", row, path);
-        if (gurobi_required > 1U) {
-            throw std::runtime_error(
-                "invalid gurobi_required in result CSV row " +
-                std::to_string(row) + ": " + path.string());
-        }
-        references.push_back(ResultReference{
-            fields[0],
-            fields[1],
-            parse_double_csv_field(fields[11], "time_limit_seconds", row,
-                                   path),
-            static_cast<int>(threads),
-            parse_unsigned_csv_field(fields[13], "memory_limit_mb", row,
-                                     path),
-            gurobi == 1U,
-            gurobi_required == 1U,
-            fields[17],
-        });
-    }
-    return references;
-}
-
-void require_unused_instance_key(const std::filesystem::path& path,
-                                 std::string_view instance_key) {
-    for (const ResultReference& reference : read_result_references(path)) {
-        if (reference.instance_key == instance_key) {
-            throw std::runtime_error(
-                "result CSV already contains instance_key=" +
-                std::string(instance_key) +
-                "; use a different output directory or batch mode");
-        }
-    }
+    return std::filesystem::file_size(path, error) > 0U && !error;
 }
 
 }

@@ -3,9 +3,6 @@
 #include "precpack/algorithms.hpp"
 #include "precpack/bbr.hpp"
 #include "precpack/build_config.hpp"
-#if PRECPACK_HAS_GUROBI
-#include "bin_indexed_root_bound.hpp"
-#endif
 #include "precpack/initial_bounds.hpp"
 #if PRECPACK_HAS_GUROBI
 #include "root_column_generation.hpp"
@@ -18,7 +15,6 @@
 #include <cmath>
 #include <limits>
 #include <memory>
-#include <numeric>
 #include <stdexcept>
 #include <string>
 
@@ -29,14 +25,12 @@ namespace {
 void accumulate_statistics(Statistics& target, const Statistics& source) {
     target.explored_nodes += source.explored_nodes;
     target.infeasible_nodes += source.infeasible_nodes;
-    target.phase_one_count += source.phase_one_count;
     target.pricing_search_nodes += source.pricing_search_nodes;
     target.rmp_count += source.rmp_count;
     target.pricing_count += source.pricing_count;
     target.cg_count += source.cg_count;
     target.cg_iterations += source.cg_iterations;
     target.generated_columns += source.generated_columns;
-    target.generated_precedence_rows += source.generated_precedence_rows;
     target.initial_bdp_states += source.initial_bdp_states;
     target.initial_bdp_transitions += source.initial_bdp_transitions;
     target.preprocessing_seconds += source.preprocessing_seconds;
@@ -46,63 +40,6 @@ void accumulate_statistics(Statistics& target, const Statistics& source) {
     target.pricing_seconds += source.pricing_seconds;
     target.cg_seconds += source.cg_seconds;
     target.initial_bdp_seconds += source.initial_bdp_seconds;
-}
-
-enum class RootBoundKind { kPositionFreeM, kDirectPrecedence };
-
-[[nodiscard]] RootStatistics direct_root_statistics(
-    const BinIndexedRootBoundResult& result,
-    const Statistics& statistics,
-    double elapsed_seconds) {
-    RootStatistics root;
-    root.attempted = result.attempted;
-    root.completed = result.completed;
-    root.timed_out = result.timed_out;
-    root.certified_lower_bound = result.certified_lower_bound;
-    root.lp_value = result.lp_value;
-    root.column_count = result.column_count;
-    root.generated_columns = statistics.generated_columns;
-    root.iterations = statistics.cg_iterations;
-    root.pricing_count = statistics.pricing_count;
-    root.pricing_search_nodes = statistics.pricing_search_nodes;
-    root.rmp_count = statistics.rmp_count;
-    root.generated_precedence_rows =
-        statistics.generated_precedence_rows;
-    root.phase_one_count = statistics.phase_one_count;
-    root.total_seconds = elapsed_seconds;
-    root.pricing_seconds = statistics.pricing_seconds;
-    root.rmp_seconds = statistics.rmp_seconds;
-    return root;
-}
-
-void append_root_statistics(RootStatistics& target,
-                            const RootStatistics& source) {
-    const bool target_was_attempted = target.attempted;
-    target.attempted = target.attempted || source.attempted;
-    target.completed = source.attempted ? source.completed : target.completed;
-    target.timed_out = source.attempted ? source.timed_out : target.timed_out;
-    target.numerical_failure =
-        target.numerical_failure || source.numerical_failure;
-    target.certified_lower_bound = std::max(
-        target.certified_lower_bound, source.certified_lower_bound);
-    if (std::isfinite(source.lp_value)) {
-        target.lp_value = std::isfinite(target.lp_value)
-                              ? std::max(target.lp_value, source.lp_value)
-                              : source.lp_value;
-    } else if (!target_was_attempted) {
-        target.lp_value = source.lp_value;
-    }
-    target.column_count += source.column_count;
-    target.generated_columns += source.generated_columns;
-    target.iterations += source.iterations;
-    target.pricing_count += source.pricing_count;
-    target.pricing_search_nodes += source.pricing_search_nodes;
-    target.rmp_count += source.rmp_count;
-    target.generated_precedence_rows += source.generated_precedence_rows;
-    target.phase_one_count += source.phase_one_count;
-    target.total_seconds += source.total_seconds;
-    target.pricing_seconds += source.pricing_seconds;
-    target.rmp_seconds += source.rmp_seconds;
 }
 #endif
 
@@ -122,6 +59,8 @@ void accumulate_preliminary_bbr_statistics(
     target.complete_dff_enabled =
         target.complete_dff_enabled || source.complete_dff_enabled;
     target.binlb_enabled = target.binlb_enabled || source.binlb_enabled;
+    target.conflict_binlb_enabled =
+        target.conflict_binlb_enabled || source.conflict_binlb_enabled;
     target.structured_preprocessing_enabled =
         target.structured_preprocessing_enabled ||
         source.structured_preprocessing_enabled;
@@ -168,6 +107,16 @@ void accumulate_preliminary_bbr_statistics(
     target.binlb_memo_hits += source.binlb_memo_hits;
     target.binlb_memo_entries = std::max(
         target.binlb_memo_entries, source.binlb_memo_entries);
+    target.binlb_target_hits += source.binlb_target_hits;
+    target.binlb_conflict_edges = std::max(
+        target.binlb_conflict_edges, source.binlb_conflict_edges);
+    target.binlb_conflict_calls += source.binlb_conflict_calls;
+    target.binlb_conflict_completed += source.binlb_conflict_completed;
+    target.binlb_conflict_search_nodes +=
+        source.binlb_conflict_search_nodes;
+    target.binlb_conflict_loads += source.binlb_conflict_loads;
+    target.binlb_conflict_memo_hits += source.binlb_conflict_memo_hits;
+    target.binlb_ordinary_memo_hits += source.binlb_ordinary_memo_hits;
     target.incumbent_updates += source.incumbent_updates;
     target.peak_open_states =
         std::max(target.peak_open_states, source.peak_open_states);
@@ -217,14 +166,10 @@ Solution solve(const Instance& instance, const Config& requested_config) {
     if (config.time_limit_seconds <= 0.0) {
         throw std::invalid_argument("time limit must be positive");
     }
-    if (config.threads == 0 || config.threads < -1) {
-        throw std::invalid_argument("threads must be -1 or a positive integer");
-    }
     const auto solve_start = std::chrono::steady_clock::now();
     Deadline deadline(config.time_limit_seconds);
     Solution solution;
     solution.gurobi_runtime_required = config.require_gurobi_runtime;
-    solution.threads = resolve_thread_count(config.threads);
 
 #if PRECPACK_HAS_GUROBI
     std::unique_ptr<GRBEnv> environment;
@@ -250,9 +195,6 @@ Solution solve(const Instance& instance, const Config& requested_config) {
         config.bbr_memory_limit_mb * kMegabyte;
     solution.bbr_stats.initial_bdp_enabled =
         initialization_config.bbr_enable_initial_bdp;
-    solution.bbr_stats.requested_threads = config.threads;
-    solution.bbr_stats.threads = solution.threads;
-    solution.bbr_stats.parallel = solution.threads > 1;
     solution.bbr_stats.item_dominance_enabled = config.bbr_enable_jackson;
     solution.bbr_stats.generalized_item_dominance_enabled =
         config.bbr_enable_generalized_item_dominance;
@@ -260,6 +202,8 @@ Solution solve(const Instance& instance, const Config& requested_config) {
         config.bbr_enable_paper_queue_order;
     solution.bbr_stats.complete_dff_enabled = config.bbr_enable_complete_dff;
     solution.bbr_stats.binlb_enabled = config.bbr_enable_binlb;
+    solution.bbr_stats.conflict_binlb_enabled =
+        config.bbr_enable_binlb && config.bbr_enable_conflict_binlb;
     solution.bbr_stats.binlb_call_time_limit_seconds =
         config.bbr_binlb_call_time_limit_seconds;
     solution.bbr_stats.binlb_total_time_limit_seconds =
@@ -268,6 +212,10 @@ Solution solve(const Instance& instance, const Config& requested_config) {
     solution.bbr_stats.binlb_load_limit = config.bbr_binlb_load_limit;
     solution.bbr_stats.binlb_memo_limit = config.bbr_binlb_memo_limit;
     solution.bbr_stats.binlb_max_items = config.bbr_binlb_max_items;
+    solution.bbr_stats.conflict_binlb_call_time_limit_seconds =
+        config.bbr_conflict_binlb_call_time_limit_seconds;
+    solution.bbr_stats.conflict_binlb_node_limit =
+        config.bbr_conflict_binlb_node_limit;
     solution.bbr_stats.seed = config.seed;
     solution.bbr_stats.time_limit_seconds = config.time_limit_seconds;
     solution.bbr_stats.initialization_time_limit_seconds =
@@ -319,14 +267,10 @@ Solution solve(const Instance& instance, const Config& requested_config) {
     try {
         if (config.bbr_enable_root_strengthening &&
             solution.lower_bound < solution.upper_bound &&
+            initial.prepared.search_instance.size() <=
+                kMaximumPositionFreeRootItems &&
             !deadline.expired()) {
-            const double configured_budget =
-                config.bbr_root_cg_time_limit_seconds > 0.0
-                    ? config.bbr_root_cg_time_limit_seconds
-                    : deadline.remaining_seconds();
-            const double root_budget =
-                std::min(configured_budget, deadline.remaining_seconds());
-            const auto run_root_model = [&](RootBoundKind kind, double budget,
+            const auto run_root_model = [&](double budget,
                                             int current_lower_bound) {
                 RootStatistics root;
                 const int residual_lower_bound = std::max(
@@ -342,27 +286,10 @@ Solution solve(const Instance& instance, const Config& requested_config) {
                 Deadline root_deadline(
                     std::min(budget, deadline.remaining_seconds()));
                 Statistics root_algorithm_statistics;
-                if (kind == RootBoundKind::kDirectPrecedence) {
-                    const auto root_start = std::chrono::steady_clock::now();
-                    const BinIndexedRootBoundResult result =
-                        run_bin_indexed_root_bound(
-                            environment_provider(),
-                            initial.prepared.search_instance,
-                            initial.prepared.search_incumbent,
-                            residual_lower_bound, config, root_deadline,
-                            root_algorithm_statistics);
-                    root = direct_root_statistics(
-                        result, root_algorithm_statistics,
-                        std::chrono::duration<double>(
-                            std::chrono::steady_clock::now() - root_start)
-                            .count());
-                } else {
-                    root = run_position_free_root_column_generation(
-                        environment_provider(),
-                        initial.prepared.search_instance,
-                        initial.prepared.search_incumbent, residual_lower_bound,
-                        config, root_deadline, root_algorithm_statistics);
-                }
+                root = run_position_free_root_column_generation(
+                    environment_provider(), initial.prepared.search_instance,
+                    initial.prepared.search_incumbent, residual_lower_bound,
+                    config, root_deadline, root_algorithm_statistics);
                 if (root.attempted) {
                     root.certified_lower_bound +=
                         initial.prepared.fixed_bin_offset;
@@ -375,43 +302,27 @@ Solution solve(const Instance& instance, const Config& requested_config) {
                 return root;
             };
 
-            constexpr int kAdaptiveRootItemLimit = 128;
-            constexpr double kMProbeSeconds = 0.15;
-            constexpr double kDirectCapSeconds = 3.0;
             const Instance& search_instance = initial.prepared.search_instance;
-            const int maximum_separation = std::accumulate(
-                search_instance.arcs.begin(), search_instance.arcs.end(), 0,
-                [](int value, const Arc& arc) {
-                    return std::max(value, arc.separation);
-                });
-            RootStatistics first;
-            if (search_instance.size() <= kAdaptiveRootItemLimit) {
-                first = run_root_model(
-                    RootBoundKind::kPositionFreeM,
-                    std::min(root_budget, kMProbeSeconds),
-                    solution.lower_bound);
-                append_root_statistics(solution.root_stats, first);
+            constexpr double kMaximumRemainingTimeFraction = 0.05;
+            constexpr double kRootSecondsPerItem = 0.0015;
+            constexpr double kMinimumRootSeconds = 0.05;
+            constexpr double kMaximumRootSeconds = 0.2;
+            const double remaining_seconds = deadline.remaining_seconds();
+            const double item_scaled_budget = std::max(
+                kMinimumRootSeconds,
+                kRootSecondsPerItem *
+                    static_cast<double>(search_instance.size()));
+            const double root_budget = std::min(
+                {item_scaled_budget, kMaximumRootSeconds,
+                 kMaximumRemainingTimeFraction * remaining_seconds});
+            if (root_budget >= kMinimumRootSeconds) {
+                RootStatistics root = run_root_model(
+                    root_budget, solution.lower_bound);
+                solution.root_stats = root;
                 solution.lower_bound = std::min(
                     solution.upper_bound,
                     std::max(solution.lower_bound,
-                             first.certified_lower_bound));
-            }
-            const bool use_direct =
-                first.completed && maximum_separation >= 2 &&
-                solution.upper_bound - solution.lower_bound >= 2 &&
-                !deadline.expired();
-            if (use_direct) {
-                const double remaining_root_budget = std::min(
-                    {std::max(0.0, root_budget - first.total_seconds),
-                     kDirectCapSeconds, deadline.remaining_seconds()});
-                RootStatistics second = run_root_model(
-                    RootBoundKind::kDirectPrecedence,
-                    remaining_root_budget, solution.lower_bound);
-                append_root_statistics(solution.root_stats, second);
-                solution.lower_bound = std::min(
-                    solution.upper_bound,
-                    std::max(solution.lower_bound,
-                             second.certified_lower_bound));
+                             root.certified_lower_bound));
             }
         }
     } catch (const GRBException&) {

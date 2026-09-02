@@ -63,17 +63,6 @@ namespace {
     return value;
 }
 
-[[nodiscard]] int parse_threads(const std::string& text) {
-    if (text == "-1") {
-        return -1;
-    }
-    const std::uint64_t value = parse_positive_integer(text, "--threads");
-    if (value > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
-        usage_error("--threads is too large: " + text);
-    }
-    return static_cast<int>(value);
-}
-
 }
 
 CommandLineOptions parse_command_line(int argc, char* const argv[]) {
@@ -89,8 +78,6 @@ CommandLineOptions parse_command_line(int argc, char* const argv[]) {
         }
         if (argument == "--batch") {
             options.batch_mode = true;
-        } else if (argument == "--check-only") {
-            options.check_only = true;
         } else if (argument == "--problem") {
             options.problem =
                 parse_problem_kind(require_value(index, argc, argv));
@@ -106,11 +93,10 @@ CommandLineOptions parse_command_line(int argc, char* const argv[]) {
         } else if (argument == "--time-limit") {
             options.time_limit_seconds = parse_positive_double(
                 require_value(index, argc, argv), "--time-limit");
+            options.time_limit_was_set = true;
         } else if (argument == "--memory-limit-mb") {
             options.memory_limit_mb = parse_positive_integer(
                 require_value(index, argc, argv), "--memory-limit-mb");
-        } else if (argument == "--threads") {
-            options.threads = parse_threads(require_value(index, argc, argv));
         } else if (argument == "--output-dir") {
             options.output_directory = require_value(index, argc, argv);
             output_was_set = true;
@@ -124,6 +110,10 @@ CommandLineOptions parse_command_line(int argc, char* const argv[]) {
     }
     if (options.output_directory.empty()) {
         usage_error("--output-dir cannot be empty");
+    }
+    if (!output_was_set) {
+        options.output_directory =
+            std::filesystem::path("results") / to_slug(options.problem);
     }
     if (options.batch_mode) {
         if (!options.instance_path.empty() || options.graph_path.has_value()) {
@@ -140,17 +130,10 @@ CommandLineOptions parse_command_line(int argc, char* const argv[]) {
             options.graph_directory.has_value()) {
             usage_error("--graph-dir is only valid for bpp-gp");
         }
-        if (!output_was_set) {
-            options.output_directory =
-                std::filesystem::path("results") / to_slug(options.problem);
-        }
     } else {
         if (options.input_path.has_value() ||
             options.graph_directory.has_value()) {
             usage_error("--input and --graph-dir require --batch");
-        }
-        if (options.check_only) {
-            usage_error("--check-only requires --batch");
         }
         if (options.instance_path.empty()) {
             usage_error("--instance is required");
@@ -170,6 +153,13 @@ CommandLineOptions parse_command_line(int argc, char* const argv[]) {
     return options;
 }
 
+Config make_command_line_solver_config(
+    const CommandLineOptions& options,
+    double time_limit_seconds) {
+    return make_solver_config(
+        options.problem, time_limit_seconds, options.memory_limit_mb);
+}
+
 void print_help(std::ostream& output, std::string_view executable) {
     output
         << "PrecPack exact solver\n\n"
@@ -184,21 +174,17 @@ void print_help(std::ostream& output, std::string_view executable) {
         << "Batch options:\n"
         << "  --batch                 Run selected instances sequentially\n"
         << "  --input PATH            .txt file or directory; bundled data by default\n"
-        << "  --graph-dir PATH        .graph file or directory (bpp-gp only)\n"
-        << "  --check-only            Validate selection and existing output only\n\n"
+        << "  --graph-dir PATH        .graph file or directory (bpp-gp only)\n\n"
         << "Resource and output options:\n"
-        << "  --time-limit SECONDS    Global limit (default: 300)\n"
+        << "  --time-limit SECONDS    Per-solve limit (default: 300; bundled batches\n"
+        << "                          use the documented benchmark schedule)\n"
         << "  --memory-limit-mb MB    BBR memory cap (default: 24576)\n"
-        << "  --threads N             BBR workers; -1 uses available CPUs "
-           "(default: 1)\n"
-        << "  --output-dir DIR        Results directory (default: results;\n"
-        << "                          results/TYPE in batch mode)\n"
+        << "  --output-dir DIR        Results directory (default: results/TYPE)\n"
         << "  --help                  Show this message\n\n"
         << "Build capabilities:\n"
         << "  Optional Gurobi root strengthening: "
         << (kHasGurobiSupport ? "enabled" : "disabled") << "\n\n"
-        << "Algorithm choices are fixed by --problem. Parallelism is optional "
-           "and applies only to exact BBR.\n";
+        << "Production algorithm choices are fixed by --problem.\n";
 }
 
 }

@@ -7,8 +7,11 @@
 #include "precpack/solver.hpp"
 #include "precpack/solver_profile.hpp"
 
+#include "bppp_flow_bound.hpp"
+#include "conflict_bin_packing.hpp"
+#include "window_dff.hpp"
+
 #if PRECPACK_HAS_GUROBI
-#include "bin_indexed_root_bound.hpp"
 #include "gurobi_oracle.hpp"
 #include "root_column_generation.hpp"
 
@@ -189,10 +192,141 @@ void require(bool condition, const std::string& message) {
     throw std::logic_error("brute-force oracle failed to recover a feasible upper bound");
 }
 
+[[nodiscard]] int brute_force_conflict_packing_optimum(
+    const precpack::Instance& instance) {
+    const int n = instance.size();
+    std::vector<unsigned char> reachable(
+        static_cast<std::size_t>(n) * n, 0U);
+    for (int item = 0; item < n; ++item) {
+        reachable[static_cast<std::size_t>(item) * n + item] = 1U;
+    }
+    for (const precpack::Arc& arc : instance.arcs) {
+        reachable[static_cast<std::size_t>(arc.from) * n + arc.to] = 1U;
+    }
+    for (int via = 0; via < n; ++via) {
+        for (int from = 0; from < n; ++from) {
+            if (reachable[static_cast<std::size_t>(from) * n + via] == 0U) {
+                continue;
+            }
+            for (int to = 0; to < n; ++to) {
+                if (reachable[static_cast<std::size_t>(via) * n + to] != 0U) {
+                    reachable[static_cast<std::size_t>(from) * n + to] = 1U;
+                }
+            }
+        }
+    }
+
+    std::vector<unsigned char> conflicts(
+        static_cast<std::size_t>(n) * n, 0U);
+    for (int lhs = 0; lhs < n; ++lhs) {
+        for (int rhs = lhs + 1; rhs < n; ++rhs) {
+            bool conflict =
+                instance.has_positive_separation_path(lhs, rhs) ||
+                instance.has_positive_separation_path(rhs, lhs);
+            if (!conflict) {
+                int from = -1;
+                int to = -1;
+                if (reachable[static_cast<std::size_t>(lhs) * n + rhs] != 0U) {
+                    from = lhs;
+                    to = rhs;
+                } else if (reachable[
+                               static_cast<std::size_t>(rhs) * n + lhs] != 0U) {
+                    from = rhs;
+                    to = lhs;
+                }
+                if (from >= 0) {
+                    std::int64_t interval_weight = 0;
+                    for (int item = 0; item < n; ++item) {
+                        if (reachable[
+                                static_cast<std::size_t>(from) * n + item] != 0U &&
+                            reachable[
+                                static_cast<std::size_t>(item) * n + to] != 0U) {
+                            interval_weight += instance.items[
+                                static_cast<std::size_t>(item)].weight;
+                        }
+                    }
+                    conflict = interval_weight > instance.capacity;
+                }
+            }
+            if (conflict) {
+                conflicts[static_cast<std::size_t>(lhs) * n + rhs] = 1U;
+                conflicts[static_cast<std::size_t>(rhs) * n + lhs] = 1U;
+            }
+        }
+    }
+
+    std::vector<int> order(static_cast<std::size_t>(n));
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](int lhs, int rhs) {
+        const auto lhs_begin = conflicts.begin() +
+            static_cast<std::size_t>(lhs) * n;
+        const auto rhs_begin = conflicts.begin() +
+            static_cast<std::size_t>(rhs) * n;
+        const int lhs_degree = static_cast<int>(std::count(
+            lhs_begin, lhs_begin + n, static_cast<unsigned char>(1U)));
+        const int rhs_degree = static_cast<int>(std::count(
+            rhs_begin, rhs_begin + n, static_cast<unsigned char>(1U)));
+        if (lhs_degree != rhs_degree) {
+            return lhs_degree > rhs_degree;
+        }
+        const int lhs_weight =
+            instance.items[static_cast<std::size_t>(lhs)].weight;
+        const int rhs_weight =
+            instance.items[static_cast<std::size_t>(rhs)].weight;
+        return lhs_weight != rhs_weight ? lhs_weight > rhs_weight
+                                         : lhs < rhs;
+    });
+
+    int best = n;
+    std::vector<int> bin_of_item(static_cast<std::size_t>(n), -1);
+    std::vector<int> loads(static_cast<std::size_t>(n), 0);
+    const std::function<void(int, int)> search =
+        [&](int position, int used_bins) {
+        if (used_bins >= best) {
+            return;
+        }
+        if (position == n) {
+            best = used_bins;
+            return;
+        }
+        const int item = order[static_cast<std::size_t>(position)];
+        const int weight =
+            instance.items[static_cast<std::size_t>(item)].weight;
+        for (int bin = 0; bin <= used_bins; ++bin) {
+            if (bin == used_bins && used_bins + 1 >= best) {
+                break;
+            }
+            if (loads[static_cast<std::size_t>(bin)] + weight >
+                instance.capacity) {
+                continue;
+            }
+            bool compatible = true;
+            for (int other = 0; other < n; ++other) {
+                if (bin_of_item[static_cast<std::size_t>(other)] == bin &&
+                    conflicts[static_cast<std::size_t>(item) * n + other] !=
+                        0U) {
+                    compatible = false;
+                    break;
+                }
+            }
+            if (!compatible) {
+                continue;
+            }
+            bin_of_item[static_cast<std::size_t>(item)] = bin;
+            loads[static_cast<std::size_t>(bin)] += weight;
+            search(position + 1, std::max(used_bins, bin + 1));
+            loads[static_cast<std::size_t>(bin)] -= weight;
+            bin_of_item[static_cast<std::size_t>(item)] = -1;
+        }
+    };
+    search(0, 0);
+    return best;
+}
+
 [[nodiscard]] precpack::Config exact_config(
     precpack::ProblemKind problem = precpack::ProblemKind::kBppGp) {
     precpack::Config config =
-        precpack::make_solver_config(problem, 10.0, 256, 1);
+        precpack::make_solver_config(problem, 10.0, 256);
     config.bbr_enable_root_strengthening = false;
     return config;
 }
@@ -287,6 +421,94 @@ void test_precedence_distance_range() {
             "an out-of-range precedence path was not rejected");
 }
 
+void test_compact_reachability() {
+    std::mt19937 generator(0xA11CEU);
+    for (int test = 0; test < 120; ++test) {
+        const int n = 2 + static_cast<int>(generator() % 11U);
+        std::vector<precpack::Arc> arcs;
+        std::vector<std::vector<unsigned char>> reachable(
+            static_cast<std::size_t>(n),
+            std::vector<unsigned char>(static_cast<std::size_t>(n), 0U));
+        std::vector<std::vector<int>> longest(
+            static_cast<std::size_t>(n),
+            std::vector<int>(static_cast<std::size_t>(n), -1));
+        std::vector<int> topological_labels(static_cast<std::size_t>(n));
+        std::iota(topological_labels.begin(), topological_labels.end(), 0);
+        std::shuffle(topological_labels.begin(), topological_labels.end(),
+                     generator);
+        for (int from_position = 0; from_position < n; ++from_position) {
+            for (int to_position = from_position + 1; to_position < n;
+                 ++to_position) {
+                if (generator() % 4U != 0U) {
+                    continue;
+                }
+                const int from = topological_labels[
+                    static_cast<std::size_t>(from_position)];
+                const int to = topological_labels[
+                    static_cast<std::size_t>(to_position)];
+                const int separation = static_cast<int>(generator() % 4U);
+                arcs.push_back({from, to, separation});
+                reachable[static_cast<std::size_t>(from)]
+                         [static_cast<std::size_t>(to)] = 1U;
+                longest[static_cast<std::size_t>(from)]
+                       [static_cast<std::size_t>(to)] = separation;
+            }
+        }
+        for (int intermediate = 0; intermediate < n; ++intermediate) {
+            for (int from = 0; from < n; ++from) {
+                if (from == intermediate ||
+                    reachable[static_cast<std::size_t>(from)]
+                             [static_cast<std::size_t>(intermediate)] == 0U) {
+                    continue;
+                }
+                for (int to = 0; to < n; ++to) {
+                    if (reachable[static_cast<std::size_t>(intermediate)]
+                                 [static_cast<std::size_t>(to)] == 0U) {
+                        continue;
+                    }
+                    reachable[static_cast<std::size_t>(from)]
+                             [static_cast<std::size_t>(to)] = 1U;
+                    longest[static_cast<std::size_t>(from)]
+                           [static_cast<std::size_t>(to)] = std::max(
+                        longest[static_cast<std::size_t>(from)]
+                               [static_cast<std::size_t>(to)],
+                        longest[static_cast<std::size_t>(from)]
+                               [static_cast<std::size_t>(intermediate)] +
+                            longest[static_cast<std::size_t>(intermediate)]
+                                   [static_cast<std::size_t>(to)]);
+                }
+            }
+        }
+        const precpack::Instance instance = make_instance(
+            std::vector<int>(static_cast<std::size_t>(n), 1), 10,
+            std::move(arcs));
+        for (int from = 0; from < n; ++from) {
+            for (int to = 0; to < n; ++to) {
+                require(
+                    instance.reaches(from, to) ==
+                        (reachable[static_cast<std::size_t>(from)]
+                                  [static_cast<std::size_t>(to)] != 0U),
+                    "compact reachability changed transitive closure");
+                const bool recorded_ancestor =
+                    ((instance.reaching_row(to)[
+                          static_cast<std::size_t>(from) / 64U] >>
+                      (static_cast<unsigned>(from) & 63U)) &
+                     1U) != 0U;
+                require(
+                    recorded_ancestor ==
+                        (reachable[static_cast<std::size_t>(from)]
+                                  [static_cast<std::size_t>(to)] != 0U),
+                    "compact reverse reachability changed transitive closure");
+                require(
+                    instance.has_positive_separation_path(from, to) ==
+                        (longest[static_cast<std::size_t>(from)]
+                                [static_cast<std::size_t>(to)] > 0),
+                    "compact positive reachability changed separation semantics");
+            }
+        }
+    }
+}
+
 void test_complete_dff_dual_feasibility() {
     const std::vector<int> weights{1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
     constexpr int capacity = 10;
@@ -323,6 +545,81 @@ void test_complete_dff_dual_feasibility() {
     require(identity_found, "complete DFF family lost the identity transform");
 }
 
+void test_ranked_complete_dff_selection() {
+    const precpack::DffTransformSet empty =
+        precpack::select_ranked_complete_dff_transforms(
+            {1, 2, 3}, 5, true, 0U);
+    require(empty.item_count == 3 && empty.size() == 0U,
+            "zero-sized DFF selection changed the public shape");
+    std::mt19937 generator(0xC0DFFU);
+    for (int test = 0; test < 60; ++test) {
+        const int capacity = 5 + static_cast<int>(generator() % 46U);
+        const int item_count = 2 + static_cast<int>(generator() % 15U);
+        std::vector<int> weights(static_cast<std::size_t>(item_count));
+        for (int& weight : weights) {
+            weight = 1 + static_cast<int>(
+                             generator() % static_cast<unsigned>(capacity));
+        }
+        const bool include_dff3 = (test & 1) != 0;
+        const std::size_t maximum =
+            1U + static_cast<std::size_t>(generator() % 20U);
+        const precpack::DffTransformSet complete =
+            precpack::build_complete_dff_transforms(
+                weights, capacity, include_dff3);
+        std::vector<std::size_t> order(complete.size());
+        std::iota(order.begin(), order.end(), 0U);
+        const auto total = [&](std::size_t transform) {
+            return std::accumulate(
+                complete.row(transform),
+                complete.row(transform) + complete.item_count,
+                std::int64_t{0});
+        };
+        std::vector<std::int64_t> totals(complete.size(), 0);
+        std::vector<int> root_bounds(complete.size(), 0);
+        for (std::size_t transform = 0; transform < complete.size();
+             ++transform) {
+            totals[transform] = total(transform);
+            root_bounds[transform] = static_cast<int>(
+                totals[transform] / complete.capacities[transform] +
+                (totals[transform] % complete.capacities[transform] != 0));
+        }
+        std::stable_sort(order.begin(), order.end(),
+                         [&](std::size_t lhs, std::size_t rhs) {
+            if (root_bounds[lhs] != root_bounds[rhs]) {
+                return root_bounds[lhs] > root_bounds[rhs];
+            }
+            const long double lhs_scaled =
+                static_cast<long double>(totals[lhs]) *
+                complete.capacities[rhs];
+            const long double rhs_scaled =
+                static_cast<long double>(totals[rhs]) *
+                complete.capacities[lhs];
+            if (lhs_scaled != rhs_scaled) {
+                return lhs_scaled > rhs_scaled;
+            }
+            return complete.capacities[lhs] < complete.capacities[rhs];
+        });
+        if (order.size() > maximum) {
+            order.resize(maximum);
+        }
+
+        const precpack::DffTransformSet selected =
+            precpack::select_ranked_complete_dff_transforms(
+                weights, capacity, include_dff3, maximum);
+        require(selected.size() == order.size(),
+                "streaming DFF selection changed the candidate count");
+        for (std::size_t rank = 0; rank < order.size(); ++rank) {
+            const std::size_t expected = order[rank];
+            require(
+                selected.capacities[rank] == complete.capacities[expected] &&
+                    std::equal(selected.row(rank),
+                               selected.row(rank) + selected.item_count,
+                               complete.row(expected)),
+                "streaming DFF selection changed candidate ranking");
+        }
+    }
+}
+
 void test_initial_dff_exact_arithmetic() {
     require(precpack::compute_initial_dff_lower_bound(
                 {670, 330}, 1000) == 1,
@@ -339,6 +636,63 @@ void test_initial_dff_exact_arithmetic() {
                         {first, capacity - first}, capacity) == 1,
                     "initial DFF violated dual feasibility");
         }
+    }
+}
+
+[[nodiscard]] int reference_window_dff_lower_bound(
+    const std::vector<int>& weights,
+    const std::vector<int>& front,
+    const std::vector<int>& back,
+    int capacity) {
+    const int longest = *std::max_element(front.begin(), front.end());
+    int lower_bound = 1;
+    std::vector<int> selected;
+    selected.reserve(weights.size());
+    for (int g = 1; g <= longest; ++g) {
+        for (int h = 1; h <= longest - g; ++h) {
+            selected.clear();
+            for (std::size_t item = 0; item < weights.size(); ++item) {
+                if (front[item] >= g && back[item] >= h) {
+                    selected.push_back(weights[item]);
+                }
+            }
+            lower_bound = std::max(
+                lower_bound,
+                g + h +
+                    precpack::compute_initial_dff_lower_bound(
+                        selected, capacity));
+        }
+    }
+    return lower_bound;
+}
+
+void test_window_dff_aggregation() {
+    std::mt19937 generator(0xDFF123U);
+    for (int test = 0; test < 200; ++test) {
+        const int item_count = 1 + static_cast<int>(generator() % 16U);
+        const int capacity = 2 + static_cast<int>(generator() % 39U);
+        const int maximum_position = static_cast<int>(generator() % 9U);
+        std::vector<int> weights(static_cast<std::size_t>(item_count));
+        std::vector<int> front(static_cast<std::size_t>(item_count));
+        std::vector<int> back(static_cast<std::size_t>(item_count));
+        for (int item = 0; item < item_count; ++item) {
+            weights[static_cast<std::size_t>(item)] =
+                1 + static_cast<int>(generator() %
+                                     static_cast<unsigned>(capacity));
+            front[static_cast<std::size_t>(item)] =
+                static_cast<int>(generator() %
+                                 static_cast<unsigned>(maximum_position + 1));
+            back[static_cast<std::size_t>(item)] =
+                static_cast<int>(generator() %
+                                 static_cast<unsigned>(maximum_position + 1));
+        }
+        const int reference = reference_window_dff_lower_bound(
+            weights, front, back, capacity);
+        const int aggregated =
+            precpack::internal::compute_window_dff_lower_bound(
+                weights, front, back, capacity);
+        require(aggregated == reference,
+                "aggregated window-DFF lower bound changed the exact result");
     }
 }
 
@@ -384,6 +738,121 @@ void test_generalized_lower_bound_regression() {
 
     require_solver_matches_oracle(
         instance, precpack::ProblemKind::kBppGp);
+}
+
+void test_salbp_closure_bound() {
+    const precpack::Instance instance = make_instance(
+        {4, 7, 4}, 10, {{0, 1, 0}, {1, 2, 0}}, "SALBP-I");
+    const precpack::Assignment oracle = brute_force_optimum(instance);
+    require(elementary_lower_bound(instance) == 2 &&
+                oracle.bin_count == 3,
+            "SALBP-I closure-bound strengthening oracle changed");
+
+    const precpack::Assignment incumbent{{0, 1, 2}, 3};
+    precpack::Config config = exact_config(precpack::ProblemKind::kSalbpI);
+    config.bbr_enable_complete_dff = false;
+    config.bbr_enable_binlb = false;
+    config.bbr_enable_closure_bound = true;
+    precpack::Deadline deadline(5.0);
+    const precpack::BbrResult result =
+        precpack::run_branch_bound_remember(
+            make_identity_prepared(instance, incumbent),
+            elementary_lower_bound(instance), config, deadline);
+    require(result.optimal &&
+                result.certified_lower_bound == oracle.bin_count &&
+                result.incumbent.bin_count == oracle.bin_count &&
+                result.statistics.closure_bound_calls > 0 &&
+                result.statistics.closure_bound_improvements > 0 &&
+                result.statistics.closure_bound_prunes > 0 &&
+                result.statistics.machine_bound_calls == 0,
+            "SALBP-I closure bound did not strengthen safely");
+}
+
+void test_wide_dff_state_storage_fallback() {
+    const precpack::Instance instance = make_instance(
+        {400000000, 700000000, 400000000, 700000000}, 1000000000,
+        {{0, 1, 0}, {1, 2, 0}, {2, 3, 0}}, "SALBP-I");
+    const precpack::Assignment oracle = brute_force_optimum(instance);
+    require(oracle.bin_count == 4,
+            "wide-DFF storage fallback oracle changed");
+
+    const precpack::Assignment incumbent{{0, 1, 2, 3}, 4};
+    precpack::Config config = exact_config(precpack::ProblemKind::kSalbpI);
+    config.bbr_enable_binlb = false;
+    config.bbr_enable_closure_bound = false;
+    precpack::Deadline deadline(5.0);
+    const precpack::BbrResult result =
+        precpack::run_branch_bound_remember(
+            make_identity_prepared(instance, incumbent),
+            elementary_lower_bound(instance), config, deadline);
+    require(result.optimal &&
+                result.certified_lower_bound == oracle.bin_count &&
+                result.incumbent.bin_count == oracle.bin_count &&
+                result.statistics.dff_transform_count > 0,
+            "64-bit DFF state-storage fallback changed exactness");
+}
+
+void test_bppp_flow_lower_bound() {
+    const precpack::Instance strengthening = make_instance(
+        {7, 3, 6, 6, 2}, 8, {{3, 4, 1}}, "BPP-P");
+    const precpack::Assignment strengthening_oracle =
+        brute_force_optimum(strengthening);
+    require(elementary_lower_bound(strengthening) == 3 &&
+                strengthening_oracle.bin_count == 4,
+            "BPP-P flow-bound strengthening oracle changed");
+    require(precpack::internal::compute_bppp_flow_lower_bound(
+                strengthening) == 4,
+            "BPP-P flow bound failed to strengthen the elementary bound");
+
+    const precpack::Instance position_filter_counterexample = make_instance(
+        {6, 6, 1, 1, 7, 3}, 7,
+        {{0, 2, 1}, {0, 3, 1}, {1, 3, 1}, {2, 5, 1}, {3, 4, 1}},
+        "BPP-P");
+    const precpack::Assignment counterexample_oracle =
+        brute_force_optimum(position_filter_counterexample);
+    require(counterexample_oracle.bin_count == 4,
+            "BPP-P position-filter counterexample oracle changed");
+    require(precpack::internal::compute_bppp_flow_lower_bound(
+                position_filter_counterexample) == 4,
+            "BPP-P flow bound reintroduced unsafe position filters");
+
+    precpack::Config config = exact_config();
+    config.bbr_enable_early_exact_probe = false;
+    precpack::Deadline deadline(10.0);
+    precpack::Statistics statistics;
+    const precpack::InitialBoundsResult initial =
+        precpack::compute_initial_bounds(
+            position_filter_counterexample, config, deadline, statistics);
+    require(initial.lower_bound <= counterexample_oracle.bin_count,
+            "BPP-P initialization produced an invalid lower bound");
+
+    std::mt19937 random(20260823U);
+    for (int trial = 0; trial < 80; ++trial) {
+        const int item_count = 4 + static_cast<int>(random() % 4U);
+        const int capacity = 5 + static_cast<int>(random() % 7U);
+        std::vector<int> weights(static_cast<std::size_t>(item_count));
+        for (int& weight : weights) {
+            weight = 1 + static_cast<int>(
+                random() % static_cast<std::uint32_t>(capacity));
+        }
+        std::vector<precpack::Arc> arcs;
+        for (int from = 0; from < item_count; ++from) {
+            for (int to = from + 1; to < item_count; ++to) {
+                if (random() % 100U < 25U) {
+                    arcs.push_back({from, to, 1});
+                }
+            }
+        }
+        const precpack::Instance instance = make_instance(
+            std::move(weights), capacity, std::move(arcs), "BPP-P");
+        const int oracle = brute_force_optimum(instance).bin_count;
+        const int flow_bound =
+            precpack::internal::compute_bppp_flow_lower_bound(instance);
+        require(flow_bound >= elementary_lower_bound(instance) &&
+                    flow_bound <= oracle,
+                "BPP-P flow bound disagreed with brute force in trial " +
+                    std::to_string(trial));
+    }
 }
 
 void test_exact_state_memory() {
@@ -637,12 +1106,186 @@ void test_bin_packing_bound() {
     precpack::Deadline deadline(5.0);
     const precpack::BinPackingBoundResult result =
         bound.solve(remaining.data(), deadline);
-    require(result.attempted && result.completed && result.optimum == 3,
+    require(result.attempted && result.completed && result.lower_bound == 3 &&
+                result.optimum == 3,
             "ordinary BINLB returned the wrong optimum");
     int memoized = 0;
     require(bound.lookup_exact(remaining.data(), &memoized) &&
                 memoized == 3,
             "ordinary BINLB did not retain its exact memo entry");
+
+    std::mt19937 random(0xB1B1B1U);
+    for (int trial = 0; trial < 80; ++trial) {
+        const int item_count = 5 + static_cast<int>(random() % 6U);
+        const int random_capacity = 6 + static_cast<int>(random() % 10U);
+        std::vector<int> weights(static_cast<std::size_t>(item_count));
+        for (int& weight : weights) {
+            weight = 1 + static_cast<int>(
+                             random() %
+                             static_cast<unsigned>(random_capacity));
+        }
+        const precpack::Instance random_instance = make_instance(
+            std::move(weights), random_capacity);
+        const int oracle = brute_force_optimum(random_instance).bin_count;
+        precpack::BinPackingBoundLimits random_limits = limits;
+        random_limits.maximum_item_count = item_count;
+        precpack::BinPackingBound random_bound(
+            random_instance, random_limits);
+        std::vector<std::uint64_t> random_remaining(
+            random_bound.bit_block_count(),
+            (std::uint64_t{1} << item_count) - 1U);
+        precpack::Deadline random_deadline(5.0);
+        const precpack::BinPackingBoundResult random_result =
+            random_bound.solve(random_remaining.data(), random_deadline);
+        require(random_result.completed &&
+                    random_result.optimum == oracle,
+                "ordinary BINLB bitset dominance disagreed with brute force");
+    }
+}
+
+void test_conflict_aware_bin_packing_bound() {
+    std::mt19937 random(20260825U);
+    for (int trial = 0; trial < 48; ++trial) {
+        constexpr int n = 8;
+        const int capacity = 8 + static_cast<int>(random() % 5U);
+        std::vector<int> weights(static_cast<std::size_t>(n));
+        for (int& weight : weights) {
+            weight = 1 + static_cast<int>(
+                random() % static_cast<std::uint32_t>(capacity));
+        }
+        std::vector<precpack::Arc> arcs;
+        for (int from = 0; from < n; ++from) {
+            for (int to = from + 1; to < n; ++to) {
+                if (random() % 100U < 30U) {
+                    arcs.push_back({
+                        from, to, static_cast<int>(random() % 4U)});
+                }
+            }
+        }
+        const precpack::Instance instance = make_instance(
+            std::move(weights), capacity, std::move(arcs));
+        const int conflict_optimum =
+            brute_force_conflict_packing_optimum(instance);
+        const int full_optimum = brute_force_optimum(instance).bin_count;
+
+        precpack::BinPackingBoundLimits limits;
+        limits.call_time_limit_seconds = 5.0;
+        limits.search_node_limit = 10'000'000U;
+        limits.nondominated_load_limit_per_state = 1'000'000U;
+        limits.memo_entry_limit = 100'000U;
+        limits.maximum_item_count = n;
+        limits.conflict_call_time_limit_seconds = 5.0;
+        limits.conflict_search_node_limit = 10'000'000U;
+        precpack::BinPackingBoundLimits ordinary_limits = limits;
+        ordinary_limits.enable_conflicts = false;
+        precpack::BinPackingBound ordinary_bound(instance, ordinary_limits);
+        std::vector<std::uint64_t> remaining(
+            1U, (std::uint64_t{1} << n) - 1U);
+        precpack::Deadline ordinary_deadline(10.0);
+        const precpack::BinPackingBoundResult ordinary =
+            ordinary_bound.solve(remaining.data(), ordinary_deadline);
+        require(ordinary.completed && ordinary.lower_bound == ordinary.optimum &&
+                    ordinary.optimum <= conflict_optimum,
+                "ordinary BINLB disagreed with the conflict relaxation in trial " +
+                    std::to_string(trial));
+
+        precpack::BinPackingBound target_bound(instance, limits);
+        precpack::Deadline target_deadline(10.0);
+        const int one_step_target = ordinary.optimum + 1;
+        const precpack::BinPackingBoundResult target = target_bound.solve(
+            remaining.data(), target_deadline, 5.0, one_step_target);
+        const bool target_should_hold =
+            conflict_optimum >= one_step_target;
+        require(target.useful_test_completed &&
+                    target.target_reached == target_should_hold &&
+                    target.lower_bound <= conflict_optimum &&
+                    (!target.target_reached ||
+                     target.lower_bound >= one_step_target) &&
+                    (target.target_reached ||
+                     (target.completed &&
+                      target.optimum == ordinary.optimum)),
+                "conflict-aware BINLB cutoff certificate disagreed with the "
+                "independent oracle in trial " + std::to_string(trial));
+
+        precpack::BinPackingBound bound(instance, limits);
+        precpack::Deadline deadline(10.0);
+        const precpack::BinPackingBoundResult result =
+            bound.solve(remaining.data(), deadline);
+        require(result.attempted && result.completed &&
+                    result.optimum == conflict_optimum &&
+                    result.lower_bound == conflict_optimum &&
+                    result.optimum <= full_optimum,
+                "conflict-aware BINLB disagreed with the independent oracle "
+                "in trial " + std::to_string(trial) + ": expected=" +
+                std::to_string(conflict_optimum) + ", full=" +
+                std::to_string(full_optimum) + ", lower=" +
+                std::to_string(result.lower_bound) + ", optimum=" +
+                std::to_string(result.optimum) + ", completed=" +
+                std::to_string(result.completed) + ", timed_out=" +
+                std::to_string(result.timed_out) + ", node_limited=" +
+                std::to_string(result.node_limited) + ", load_limited=" +
+                std::to_string(result.load_limited) + ", nodes=" +
+                std::to_string(result.search_nodes) + ", loads=" +
+                std::to_string(result.nondominated_loads));
+
+        const precpack::BinPackingBoundResult cached =
+            bound.solve(remaining.data(), deadline);
+        require(cached.completed && cached.optimum == conflict_optimum &&
+                    (!cached.conflict_aware ||
+                     cached.conflict_memo_hits > 0U),
+                "conflict-aware BINLB did not reuse its exact subset memo");
+    }
+
+    const precpack::Instance positive_chain = make_instance(
+        {2, 2, 2}, 10, {{0, 1, 1}, {1, 2, 1}}, "BPP-P");
+    precpack::BinPackingBoundLimits limits;
+    limits.call_time_limit_seconds = 2.0;
+    limits.search_node_limit = 1'000'000U;
+    limits.nondominated_load_limit_per_state = 100'000U;
+    limits.memo_entry_limit = 10'000U;
+    limits.maximum_item_count = 10;
+    precpack::BinPackingBound bound(positive_chain, limits);
+    std::vector<std::uint64_t> remaining(
+        1U, (std::uint64_t{1} << positive_chain.size()) - 1U);
+    precpack::Deadline deadline(5.0);
+    const precpack::BinPackingBoundResult exact =
+        bound.solve(remaining.data(), deadline);
+    require(exact.completed && exact.conflict_aware &&
+                exact.conflict_phase_attempted && exact.optimum == 3,
+            "positive precedence conflicts did not strengthen BINLB");
+
+    precpack::BinPackingBound target_bound(positive_chain, limits);
+    precpack::Deadline target_deadline(5.0);
+    const precpack::BinPackingBoundResult target = target_bound.solve(
+        remaining.data(), target_deadline, 2.0, 2);
+    require(target.target_reached && target.lower_bound >= 2 &&
+                target.optimum == 0,
+            "conflict-aware BINLB did not expose a safe cutoff certificate");
+
+    limits.search_node_limit = 1U;
+    precpack::BinPackingBound limited_bound(positive_chain, limits);
+    precpack::Deadline limited_deadline(5.0);
+    const precpack::BinPackingBoundResult limited =
+        limited_bound.solve(remaining.data(), limited_deadline);
+    require(limited.attempted && !limited.completed &&
+                limited.node_limited && limited.optimum == 0 &&
+                limited.lower_bound <= 3,
+            "an unfinished conflict-aware BINLB call exposed an optimum");
+
+    const precpack::Instance salbp_interval = make_instance(
+        {4, 4, 4, 4, 4}, 10,
+        {{0, 1, 0}, {1, 2, 0}, {2, 3, 0}, {3, 4, 0}},
+        "SALBP-I");
+    require(!precpack::internal::items_have_same_bin_conflict(
+                salbp_interval, 0, 1) &&
+                precpack::internal::items_have_same_bin_conflict(
+                    salbp_interval, 0, 2) &&
+                precpack::internal::items_have_same_bin_conflict(
+                    salbp_interval, 1, 3),
+            "zero-separation interval conflicts changed semantics");
+    precpack::BinPackingBound interval_bound(salbp_interval, limits);
+    require(interval_bound.conflict_edge_count() > 0U,
+            "zero-separation overloaded intervals produced no conflicts");
 }
 
 void test_small_exact_cases() {
@@ -753,6 +1396,7 @@ void test_gurobi_free_fallback() {
 }
 
 void test_gurobi_oracle_and_root_bounds() {
+    static_assert(precpack::kMaximumPositionFreeRootItems == 100);
     GRBEnv environment = make_environment();
     const precpack::Instance packing =
         make_instance({6, 4, 6, 4}, 10);
@@ -780,14 +1424,21 @@ void test_gurobi_oracle_and_root_bounds() {
                 position_free.certified_lower_bound == 2,
             "position-free root bound returned the wrong certificate");
 
-    precpack::Deadline direct_deadline(10.0);
-    precpack::Statistics direct_statistics;
-    const precpack::BinIndexedRootBoundResult direct =
-        precpack::run_bin_indexed_root_bound(
-            environment, generalized, incumbent, 1, config,
-            direct_deadline, direct_statistics);
-    require(direct.completed && direct.certified_lower_bound == 3,
-            "direct-precedence root bound returned the wrong certificate");
+    const precpack::Instance salbp_interval = make_instance(
+        {4, 4, 4, 4, 4}, 10,
+        {{0, 1, 0}, {1, 2, 0}, {2, 3, 0}, {3, 4, 0}},
+        "SALBP-I");
+    const precpack::Assignment salbp_incumbent{{0, 0, 1, 1, 2}, 3};
+    precpack::Deadline salbp_deadline(10.0);
+    precpack::Statistics salbp_statistics;
+    const precpack::RootStatistics salbp_root =
+        precpack::run_position_free_root_column_generation(
+            environment, salbp_interval, salbp_incumbent, 2, config,
+            salbp_deadline, salbp_statistics);
+    require(salbp_root.completed &&
+                salbp_root.certified_lower_bound == 3,
+            "position-free root ignored safe zero-separation conflicts");
+
 }
 #endif
 
@@ -797,14 +1448,21 @@ int main() {
     try {
         test_assignment_checker();
         test_precedence_distance_range();
+        test_compact_reachability();
         test_complete_dff_dual_feasibility();
+        test_ranked_complete_dff_selection();
         test_initial_dff_exact_arithmetic();
+        test_window_dff_aggregation();
         test_initialization_bounds();
         test_generalized_lower_bound_regression();
+        test_salbp_closure_bound();
+        test_wide_dff_state_storage_fallback();
+        test_bppp_flow_lower_bound();
         test_exact_state_memory();
         test_profile_and_item_dominance();
         test_structured_preprocessing();
         test_bin_packing_bound();
+        test_conflict_aware_bin_packing_bound();
         test_small_exact_cases();
         test_random_bruteforce_oracle();
         test_resource_statuses();

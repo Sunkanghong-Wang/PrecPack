@@ -1,8 +1,11 @@
 #include "precpack/bin_packing_bound.hpp"
 
+#include "conflict_bin_packing.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -82,31 +85,21 @@ public:
             return false;
         }
         const std::uint64_t hash = hash_counts(key, class_count_);
-        std::size_t slot = static_cast<std::size_t>(hash) &
-                           (slots_.size() - 1U);
-        while (slots_[slot] != 0U) {
-            const std::size_t entry = slots_[slot] - 1U;
-            if (hashes_[entry] == hash && keys_equal(entry, key)) {
-                *value = values_[entry];
-                return true;
-            }
-            slot = (slot + 1U) & (slots_.size() - 1U);
-        }
-        return false;
+        return find_with_hash(key, hash, value);
     }
 
     void insert(const std::uint16_t* key, int value) {
         if (maximum_entries_ == 0U || values_.size() >= maximum_entries_) {
             return;
         }
+        const std::uint64_t hash = hash_counts(key, class_count_);
         int existing = 0;
-        if (find(key, &existing)) {
+        if (find_with_hash(key, hash, &existing)) {
             return;
         }
         if ((values_.size() + 1U) * 10U >= slots_.size() * 7U) {
             rehash(slots_.size() * 2U);
         }
-        const std::uint64_t hash = hash_counts(key, class_count_);
         const std::size_t entry = values_.size();
         keys_.insert(keys_.end(), key, key + class_count_);
         hashes_.push_back(hash);
@@ -131,6 +124,24 @@ public:
     }
 
 private:
+    [[nodiscard]] bool find_with_hash(const std::uint16_t* key,
+                                      std::uint64_t hash,
+                                      int* value) const noexcept {
+        if (slots_.empty()) {
+            return false;
+        }
+        std::size_t slot = static_cast<std::size_t>(hash) &
+                           (slots_.size() - 1U);
+        while (slots_[slot] != 0U) {
+            const std::size_t entry = slots_[slot] - 1U;
+            if (hashes_[entry] == hash && keys_equal(entry, key)) {
+                *value = values_[entry];
+                return true;
+            }
+            slot = (slot + 1U) & (slots_.size() - 1U);
+        }
+        return false;
+    }
     [[nodiscard]] bool keys_equal(std::size_t entry,
                                   const std::uint16_t* key) const noexcept {
         const std::uint16_t* stored =
@@ -185,6 +196,7 @@ public:
           capacity_(instance.capacity),
           blocks_((static_cast<std::size_t>(n_) + 63U) / 64U) {
         if (n_ <= 0 || capacity_ <= 0 ||
+            !std::isfinite(limits_.call_time_limit_seconds) ||
             limits_.call_time_limit_seconds <= 0.0 ||
             limits_.search_node_limit == 0U ||
             limits_.nondominated_load_limit_per_state == 0U ||
@@ -192,7 +204,11 @@ public:
                 std::numeric_limits<std::uint32_t>::max() ||
             limits_.maximum_item_count <= 0 ||
             limits_.maximum_item_count >
-                std::numeric_limits<std::uint16_t>::max()) {
+                std::numeric_limits<std::uint16_t>::max() ||
+            (limits_.enable_conflicts &&
+             (!std::isfinite(limits_.conflict_call_time_limit_seconds) ||
+              limits_.conflict_call_time_limit_seconds <= 0.0 ||
+              limits_.conflict_search_node_limit == 0U))) {
             throw std::invalid_argument("invalid ordinary BINLB limits");
         }
         weights_.reserve(static_cast<std::size_t>(n_));
@@ -260,15 +276,159 @@ public:
         constexpr int kMaximumDominanceWorkspace = 1'000'000;
         dominance_sum_limit_ = std::min(
             weights_.front(), kMaximumDominanceWorkspace);
-        subset_reachable_.assign(
-            static_cast<std::size_t>(dominance_sum_limit_ + 1), 0U);
+        const std::size_t dominance_words =
+            (static_cast<std::size_t>(dominance_sum_limit_) + 64U) / 64U;
+        subset_reachable_.assign(dominance_words, 0U);
+        subset_multiple_.assign(dominance_words, 0U);
+
+        constexpr int kMaximumConflictItems = 1024;
+        if (limits_.enable_conflicts && n_ <= kMaximumConflictItems) {
+            conflict_ =
+                std::make_unique<internal::ConflictBinPackingEngine>(
+                    instance_, limits_.memo_entry_limit,
+                    std::min(limits_.maximum_item_count,
+                             kMaximumConflictItems));
+        }
     }
 
     [[nodiscard]] BinPackingBoundResult solve(
         const std::uint64_t* remaining_items,
         Deadline& global_deadline,
+        double maximum_call_seconds,
+        int useful_lower_bound_target) {
+        if (conflict_ == nullptr) {
+            BinPackingBoundResult result = solve_ordinary(
+                remaining_items, global_deadline, maximum_call_seconds);
+            result.ordinary_phase_completed = result.completed;
+            return result;
+        }
+
+        const auto quick_start = Clock::now();
+        BinPackingBoundResult result;
+        result.conflict_edges = conflict_->conflict_edge_count();
+        const bool active_conflicts = result.conflict_edges != 0U &&
+            conflict_->has_active_conflict(remaining_items);
+        const int quick_bound = active_conflicts
+            ? conflict_->quick_lower_bound(remaining_items)
+            : 0;
+        const double quick_seconds = std::chrono::duration<double>(
+            Clock::now() - quick_start).count();
+        if (active_conflicts && quick_bound >= useful_lower_bound_target) {
+            result.attempted = true;
+            result.conflict_aware = true;
+            result.conflict_phase_attempted = true;
+            result.conflict_phase_completed = true;
+            result.target_reached = true;
+            result.useful_test_completed = true;
+            result.lower_bound = quick_bound;
+            result.seconds = quick_seconds;
+            return result;
+        }
+
+        const double unified_call_budget = std::min(
+            limits_.call_time_limit_seconds, maximum_call_seconds);
+        if (quick_seconds >= unified_call_budget ||
+            global_deadline.expired()) {
+            result.attempted = active_conflicts;
+            result.conflict_aware = active_conflicts;
+            result.lower_bound = quick_bound;
+            result.timed_out = true;
+            result.seconds = quick_seconds;
+            return result;
+        }
+        result = solve_ordinary(
+            remaining_items, global_deadline,
+            unified_call_budget - quick_seconds);
+        result.seconds += quick_seconds;
+        result.ordinary_phase_completed = result.completed;
+        result.conflict_edges = conflict_->conflict_edge_count();
+        if (!active_conflicts) {
+            return result;
+        }
+
+        result.conflict_aware = true;
+        result.lower_bound = std::max(result.lower_bound, quick_bound);
+        if (result.lower_bound >= useful_lower_bound_target) {
+            result.target_reached = true;
+            result.useful_test_completed = true;
+            result.completed = false;
+            result.optimum = 0;
+            return result;
+        }
+        if (!result.completed || result.item_limited) {
+            result.optimum = 0;
+            return result;
+        }
+
+        const int ordinary_optimum = result.optimum;
+        const double remaining_seconds =
+            unified_call_budget - result.seconds;
+        if (remaining_seconds <= 0.0) {
+            result.completed = false;
+            result.optimum = 0;
+            result.timed_out = true;
+            return result;
+        }
+        const std::uint64_t remaining_nodes =
+            result.search_nodes >= limits_.search_node_limit
+            ? 0U
+            : limits_.search_node_limit - result.search_nodes;
+        if (remaining_nodes == 0U) {
+            result.completed = false;
+            result.optimum = 0;
+            result.node_limited = true;
+            return result;
+        }
+
+        const internal::ExactRelaxationLookup lookup{
+            this, &Impl::lookup_ordinary_exact};
+        const int conflict_target = useful_lower_bound_target;
+        const double conflict_call_seconds = std::min(
+            remaining_seconds, limits_.conflict_call_time_limit_seconds);
+        const std::uint64_t conflict_search_nodes = std::min(
+            remaining_nodes, limits_.conflict_search_node_limit);
+        const internal::ConflictBinPackingResult conflict_result =
+            conflict_->solve(
+                remaining_items, global_deadline, conflict_call_seconds,
+                conflict_search_nodes,
+                limits_.nondominated_load_limit_per_state,
+                ordinary_optimum, conflict_target, lookup);
+        result.conflict_phase_attempted = conflict_result.attempted;
+        result.conflict_phase_completed =
+            conflict_result.completed ||
+            conflict_result.target_test_completed;
+        result.completed = conflict_result.completed;
+        result.useful_test_completed =
+            conflict_result.target_test_completed;
+        result.lower_bound = std::max(
+            ordinary_optimum, conflict_result.lower_bound);
+        result.target_reached =
+            result.lower_bound >= useful_lower_bound_target;
+        result.optimum = conflict_result.completed
+            ? conflict_result.optimum
+            : 0;
+        result.timed_out = conflict_result.timed_out;
+        result.node_limited = conflict_result.node_limited;
+        result.load_limited = conflict_result.load_limited;
+        result.conflict_search_nodes = conflict_result.search_nodes;
+        result.conflict_maximal_loads = conflict_result.maximal_loads;
+        result.conflict_memo_hits = conflict_result.memo_hits;
+        result.ordinary_memo_hits =
+            conflict_result.ordinary_memo_hits;
+        result.search_nodes += conflict_result.search_nodes;
+        result.nondominated_loads += conflict_result.maximal_loads;
+        result.memo_hits += conflict_result.memo_hits +
+                            conflict_result.ordinary_memo_hits;
+        result.seconds += conflict_result.seconds;
+        return result;
+    }
+
+    [[nodiscard]] BinPackingBoundResult solve_ordinary(
+        const std::uint64_t* remaining_items,
+        Deadline& global_deadline,
         double maximum_call_seconds) {
-        if (maximum_call_seconds <= 0.0) {
+        if (!std::isfinite(maximum_call_seconds) ||
+            maximum_call_seconds <= 0.0) {
             throw std::invalid_argument(
                 "ordinary BINLB call budget must be positive");
         }
@@ -315,7 +475,9 @@ public:
         const NodeResult root_result = solve_state(
             0, total_weight, item_count, lb2_units, lb3_units);
         result.completed = root_result.completed;
-        result.lower_bound = root_result.lower_bound;
+        result.lower_bound = root_result.completed
+            ? root_result.optimum
+            : root_result.lower_bound;
         result.optimum = root_result.completed ? root_result.optimum : 0;
         result.timed_out = timed_out_;
         result.node_limited = node_limited_;
@@ -347,8 +509,16 @@ public:
     }
 
     [[nodiscard]] std::size_t blocks() const noexcept { return blocks_; }
+    [[nodiscard]] std::uint64_t conflict_edges() const noexcept {
+        return conflict_ == nullptr ? 0U : conflict_->conflict_edge_count();
+    }
+    void disable_conflicts() noexcept {
+        conflict_.reset();
+    }
     [[nodiscard]] std::uint64_t memo_entries() const noexcept {
-        return memo_->size();
+        return memo_->size() +
+               (conflict_ == nullptr ? 0U
+                                     : conflict_->memo_entry_count());
     }
     [[nodiscard]] std::uint64_t memory_bytes() const noexcept {
         std::uint64_t bytes = memo_->memory_bytes();
@@ -361,10 +531,23 @@ public:
         bytes = saturated_add(bytes, vector_memory_bytes(candidate_classes_));
         bytes = saturated_add(bytes, vector_memory_bytes(lookup_counts_));
         bytes = saturated_add(bytes, vector_memory_bytes(greedy_bin_loads_));
-        return saturated_add(bytes, vector_memory_bytes(subset_reachable_));
+        bytes = saturated_add(bytes,
+                              vector_memory_bytes(subset_reachable_));
+        bytes = saturated_add(bytes,
+                              vector_memory_bytes(subset_multiple_));
+        return saturated_add(
+            bytes, conflict_ == nullptr ? 0U : conflict_->memory_bytes());
     }
 
 private:
+    [[nodiscard]] static bool lookup_ordinary_exact(
+        void* context,
+        const std::uint64_t* remaining_items,
+        int* optimum) {
+        return static_cast<Impl*>(context)->lookup_exact(
+            remaining_items, optimum);
+    }
+
     [[nodiscard]] std::uint16_t* state_row(int depth) noexcept {
         return state_counts_.data() +
                static_cast<std::size_t>(depth) * class_count_;
@@ -443,6 +626,40 @@ private:
         return static_cast<int>(std::max<std::int64_t>(0, threshold));
     }
 
+    [[nodiscard]] static bool bits_set_in_range(
+        const std::vector<std::uint64_t>& words,
+        int first,
+        int last) noexcept {
+        if (first > last) {
+            return false;
+        }
+        const std::size_t first_word =
+            static_cast<unsigned>(first) >> 6U;
+        const std::size_t last_word =
+            static_cast<unsigned>(last) >> 6U;
+        const unsigned first_bit = static_cast<unsigned>(first) & 63U;
+        const unsigned last_bit = static_cast<unsigned>(last) & 63U;
+        const std::uint64_t first_mask =
+            std::numeric_limits<std::uint64_t>::max() << first_bit;
+        const std::uint64_t last_mask =
+            last_bit == 63U
+                ? std::numeric_limits<std::uint64_t>::max()
+                : (std::uint64_t{1} << (last_bit + 1U)) - 1U;
+        if (first_word == last_word) {
+            return (words[first_word] & first_mask & last_mask) != 0U;
+        }
+        if ((words[first_word] & first_mask) != 0U ||
+            (words[last_word] & last_mask) != 0U) {
+            return true;
+        }
+        for (std::size_t word = first_word + 1U; word < last_word; ++word) {
+            if (words[word] != 0U) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] bool load_is_nondominated(
         const std::uint16_t* state,
         const std::uint16_t* load,
@@ -466,9 +683,12 @@ private:
             return true;
         }
 
+        const std::size_t active_words =
+            (static_cast<std::size_t>(largest_excluded) + 64U) / 64U;
         std::fill(subset_reachable_.begin(),
-                  subset_reachable_.begin() + largest_excluded + 1,
-                  static_cast<unsigned char>(0));
+                  subset_reachable_.begin() + active_words, 0U);
+        std::fill(subset_multiple_.begin(),
+                  subset_multiple_.begin() + active_words, 0U);
         subset_reachable_[0] = 1U;
         int reachable_limit = 0;
         for (std::size_t item_class = 0; item_class < class_count_;
@@ -481,18 +701,34 @@ private:
             for (int copy = 0; copy < copies; ++copy) {
                 const int next_limit = std::min(
                     largest_excluded, reachable_limit + weight);
-                for (int sum = next_limit; sum >= weight; --sum) {
-                    const unsigned char previous =
-                        subset_reachable_[static_cast<std::size_t>(
-                            sum - weight)];
-                    if ((previous & 1U) != 0U) {
-                        unsigned char flags = 1U;
-                        if (sum > weight || (previous & 2U) != 0U) {
-                            flags |= 2U;
+                const std::size_t word_shift =
+                    static_cast<unsigned>(weight) >> 6U;
+                const unsigned bit_shift =
+                    static_cast<unsigned>(weight) & 63U;
+                const std::size_t last_word =
+                    static_cast<std::size_t>(next_limit) >> 6U;
+                for (std::size_t destination = last_word + 1U;
+                     destination-- > word_shift;) {
+                    const std::size_t source = destination - word_shift;
+                    const auto source_word = [&](std::size_t index) {
+                        std::uint64_t value = subset_reachable_[index];
+                        if (index == 0U) {
+                            value &= ~std::uint64_t{1};
                         }
-                        subset_reachable_[static_cast<std::size_t>(sum)] |=
-                            flags;
+                        return value;
+                    };
+                    std::uint64_t shifted =
+                        subset_reachable_[source] << bit_shift;
+                    std::uint64_t shifted_nonempty =
+                        source_word(source) << bit_shift;
+                    if (bit_shift != 0U && source > 0U) {
+                        shifted |= subset_reachable_[source - 1U] >>
+                                   (64U - bit_shift);
+                        shifted_nonempty |= source_word(source - 1U) >>
+                                            (64U - bit_shift);
                     }
+                    subset_multiple_[destination] |= shifted_nonempty;
+                    subset_reachable_[destination] |= shifted;
                 }
                 reachable_limit = next_limit;
             }
@@ -505,13 +741,12 @@ private:
             const int excluded_weight = weights_[item_class];
             const int first_sum = std::max(1, excluded_weight - waste);
             const int last_sum = std::min(excluded_weight, reachable_limit);
-            for (int sum = first_sum; sum <= last_sum; ++sum) {
-                const unsigned char flags =
-                    subset_reachable_[static_cast<std::size_t>(sum)];
-                if ((flags & 1U) != 0U &&
-                    (sum < excluded_weight || (flags & 2U) != 0U)) {
-                    return false;
-                }
+            if (bits_set_in_range(subset_reachable_, first_sum,
+                                  std::min(last_sum,
+                                           excluded_weight - 1)) ||
+                (last_sum == excluded_weight &&
+                 bit_is_set(subset_multiple_.data(), excluded_weight))) {
+                return false;
             }
         }
         return true;
@@ -711,6 +946,7 @@ private:
     std::vector<int> lb2_units_;
     std::vector<int> lb3_units_;
     std::unique_ptr<ExactMultiplicityMemo> memo_;
+    std::unique_ptr<internal::ConflictBinPackingEngine> conflict_;
 
     std::vector<std::uint16_t> state_counts_;
     std::vector<std::uint16_t> load_counts_;
@@ -718,7 +954,8 @@ private:
     std::vector<std::uint16_t> lookup_counts_;
     std::vector<int> greedy_bin_loads_;
     int dominance_sum_limit_ = 0;
-    std::vector<unsigned char> subset_reachable_;
+    std::vector<std::uint64_t> subset_reachable_;
+    std::vector<std::uint64_t> subset_multiple_;
 
     Clock::time_point call_end_{};
     std::uint64_t call_nodes_ = 0U;
@@ -743,18 +980,36 @@ BinPackingBoundResult BinPackingBound::solve(
     const std::uint64_t* remaining_items,
     Deadline& global_deadline) {
     return solve(remaining_items, global_deadline,
-                 std::numeric_limits<double>::max());
+                 std::numeric_limits<double>::max(),
+                 std::numeric_limits<int>::max());
 }
 
 BinPackingBoundResult BinPackingBound::solve(
     const std::uint64_t* remaining_items,
     Deadline& global_deadline,
     double maximum_call_seconds) {
+    return solve(remaining_items, global_deadline, maximum_call_seconds,
+                 std::numeric_limits<int>::max());
+}
+
+BinPackingBoundResult BinPackingBound::solve(
+    const std::uint64_t* remaining_items,
+    Deadline& global_deadline,
+    double maximum_call_seconds,
+    int useful_lower_bound_target) {
     if (remaining_items == nullptr) {
-        throw std::invalid_argument("null ordinary BINLB item set");
+        throw std::invalid_argument("null BINLB item set");
+    }
+    if (useful_lower_bound_target < 0) {
+        throw std::invalid_argument("negative BINLB target");
+    }
+    if (!std::isfinite(maximum_call_seconds) ||
+        maximum_call_seconds <= 0.0) {
+        throw std::invalid_argument("invalid BINLB call budget");
     }
     return impl_->solve(
-        remaining_items, global_deadline, maximum_call_seconds);
+        remaining_items, global_deadline, maximum_call_seconds,
+        useful_lower_bound_target);
 }
 
 bool BinPackingBound::lookup_exact(const std::uint64_t* remaining_items,
@@ -765,8 +1020,16 @@ bool BinPackingBound::lookup_exact(const std::uint64_t* remaining_items,
     return impl_->lookup_exact(remaining_items, optimum);
 }
 
+void BinPackingBound::disable_conflicts() noexcept {
+    impl_->disable_conflicts();
+}
+
 std::size_t BinPackingBound::bit_block_count() const noexcept {
     return impl_->blocks();
+}
+
+std::uint64_t BinPackingBound::conflict_edge_count() const noexcept {
+    return impl_->conflict_edges();
 }
 
 std::uint64_t BinPackingBound::memo_entry_count() const noexcept {
