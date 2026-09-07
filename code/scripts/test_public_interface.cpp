@@ -177,6 +177,27 @@ void test_public_defaults() {
             "strengthening");
 }
 
+void test_cli_memory_units() {
+    const precpack::CommandLineOptions options = parse(
+        {"precpack", "--problem", "bpp-p", "--instance", "case.txt",
+         "--memory-limit-mb", "512"});
+    require(options.memory_limit_mb == 512U &&
+                precpack::make_command_line_solver_config(options, 300.0)
+                        .bbr_memory_limit_mb == 512U,
+            "the existing memory-limit option changed its value or meaning");
+
+    std::ostringstream output;
+    precpack::print_help(output, "precpack");
+    const std::string help = output.str();
+    require(help.find("--memory-limit-mb MiB") != std::string::npos,
+            "CLI help must label the memory-limit argument in MiB");
+    require(help.find("24576 MiB = 24 GiB") != std::string::npos,
+            "CLI help must state the default memory-limit conversion");
+    require(help.find("1 MiB = 2^20 bytes; 1 GiB = 2^30 bytes") !=
+                std::string::npos,
+            "CLI help must define the binary memory units");
+}
+
 void test_bundled_benchmark_time_schedule() {
     TemporaryDirectory temporary_directory;
     const std::filesystem::path instance_root =
@@ -843,6 +864,7 @@ void test_output_lock() {
 int main() {
     try {
         test_public_defaults();
+        test_cli_memory_units();
         test_bundled_benchmark_time_schedule();
         test_exact_arithmetic();
         test_public_validation();

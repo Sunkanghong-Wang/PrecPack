@@ -210,13 +210,15 @@ precpack --problem TYPE --instance FILE [options]
 
 The production command line contains only the problem type, input locations, resource limits, and the output location.
 
+Memory limits use binary units: one mebibyte (MiB) is `2^20` bytes, and one gibibyte (GiB) is `2^30` bytes. Despite the `mb` suffix, `--memory-limit-mb` and the CSV field `memory_limit_mb` both use MiB, not decimal megabytes (MB, `10^6` bytes). Their names are retained for compatibility.
+
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `--problem` | `salbp-i`, `bpp-p`, or `bpp-gp` | required |
 | `--instance` | Input assembly-line-balancing-format `.txt` file | required in single-instance mode |
 | `--graph` | Labeled `.graph` file | required for single-instance BPP-GP only |
 | `--time-limit` | Wall-clock limit per solve | `300` for single instances and external batches; bundled batches use the schedule below |
-| `--memory-limit-mb` | Global memory cap used by BBR accounting | `24576` |
+| `--memory-limit-mb` | Global memory cap used by BBR accounting, in MiB | `24576` MiB (24 GiB) |
 | `--output-dir` | Directory for `<PROBLEM>_Results.csv` and `solutions/` | `results/<problem>` |
 
 The same executable provides a sequential, resume-safe batch mode used by the supplied launchers:
