@@ -1,4 +1,4 @@
-# PrecPack
+# **PrecPack**
 
 <p align="center">
   <img src="assets/precpack-cover.svg" alt="PrecPack: exact precedence-constrained packing" width="86%">
@@ -12,7 +12,7 @@
   <a href="#requirements"><img alt="Language: C++" src="https://img.shields.io/badge/language-C%2B%2B-00599C?logo=cplusplus&amp;logoColor=white"></a>
   <a href="#build"><img alt="Build: CMake" src="https://img.shields.io/badge/build-CMake-064F8C?logo=cmake&amp;logoColor=white"></a>
   <a href="#command-line"><img alt="Problems: SALBP-I, BPP-P, and BPP-GP" src="https://img.shields.io/badge/problems-SALBP--I%20%7C%20BPP--P%20%7C%20BPP--GP-2b9348"></a>
-  <a href="#highlights"><img alt="Solver: exact" src="https://img.shields.io/badge/solver-exact-f59f00"></a>
+  <a href="#overview"><img alt="Solver: exact" src="https://img.shields.io/badge/solver-exact-f59f00"></a>
   <a href="#build"><img alt="Platforms: macOS, Linux, and Windows" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-6c63ff"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
 </p>
@@ -20,7 +20,6 @@
 <p align="center">
   <a href="#cite">Cite</a> |
   <a href="#overview">Overview</a> |
-  <a href="#highlights">Highlights</a> |
   <a href="#requirements">Requirements</a> |
   <a href="#quick-start">Quick Start</a> |
   <a href="#benchmark-instances">Instances</a> |
@@ -30,9 +29,9 @@
 
 ## Cite
 
-PrecPack is continuously maintained in this repository as a solver. A separate IJOC companion repository will archive the computational results and the source-code snapshot used in the paper. Once the final identifiers are assigned, please cite both the paper and that archival repository.
+**PrecPack** is continuously maintained in this repository as a solver. A separate INFORMS Journal on Computing (IJOC) companion repository will archive the computational results and the source-code snapshot used in the paper. Once the final identifiers are assigned, please cite both the paper and that archival repository.
 
-The following IJOC-formatted identifiers are deliberate placeholders so that the final DOI and repository URL can be inserted directly when they become available.
+The following IJOC-formatted identifiers are deliberate placeholders so that the final digital object identifier (DOI) and repository address can be inserted directly when they become available.
 
 - Paper DOI: `10.1287/ijoc.XXXX.YYYY`
 - Repository DOI: `10.1287/ijoc.XXXX.YYYY.cd`
@@ -53,21 +52,23 @@ Below is the provisional BibTeX for citing the IJOC archival repository.
 }
 ```
 
-Citation metadata for the continuously maintained PrecPack solver is available in [`CITATION.cff`](CITATION.cff), and the complete author list is recorded in [`AUTHORS`](AUTHORS).
+Citation metadata for the continuously maintained **PrecPack** solver is available in [`CITATION.cff`](CITATION.cff), and the complete author list is recorded in [`AUTHORS`](AUTHORS).
 
 ## Overview
 
-PrecPack is a single, efficient open-source exact solver for the Bin Packing Problem with Generalized Precedence Constraints (BPP-GP), which encompasses the following two classical problems as special cases:
+**PrecPack** is a single, efficient open-source exact solver for the Bin Packing Problem with Generalized Precedence Constraints (BPP-GP), which encompasses the following two classical problems as special cases:
 
 - Simple Assembly Line Balancing Problem type I (SALBP-I);
 - Bin Packing Problem with Precedence Constraints (BPP-P).
 
-This repository is intentionally software-first. It contains the solver source code, regression tests, benchmark instances, and build/run documentation. It does not contain computational results, experiment logs, profiler output, or development artifacts.
+All three problems use the same branch-bound-and-remember (BBR) search, with state representations and applicable rules determined by their precedence weights.
+
+This repository contains the solver source code, regression tests, benchmark instances, and build/run documentation. Generated results, experiment logs, profiler output, and build artifacts are excluded from version control.
 
 ```text
 PrecPack/
 ├── .github/
-│   └── workflows/build.yml    # Gurobi-free three-platform CI
+│   └── workflows/build.yml    # Gurobi-free three-platform tests
 ├── assets/                     # README artwork
 ├── code/
 │   ├── CMakeLists.txt          # Build definition
@@ -78,10 +79,10 @@ PrecPack/
 │       ├── bbr.cpp             # Exact BBR search
 │       ├── initial_bounds.cpp  # Preprocessing, bounds, and incumbents
 │       ├── root_column_generation.cpp  # Position-free root bound
-│       ├── bin_packing_bound.cpp       # Ordinary residual BINLB
-│       ├── conflict_bin_packing.cpp    # Conflict-aware residual BINLB
+│       ├── bin_packing_bound.cpp       # Ordinary bin-packing bound
+│       ├── conflict_bin_packing.cpp    # Conflict-aware bin-packing bound
 │       ├── dff.cpp                     # Dual-feasible functions
-│       └── ...                         # CLI, I/O, profiles, and orchestration
+│       └── ...                         # Input/output, configuration, and orchestration
 ├── data/
 │   ├── README.md               # Data formats and sources
 │   ├── instances/              # Shared Otto and Scholl item data
@@ -94,50 +95,38 @@ PrecPack/
 └── README.md
 ```
 
-All implementation and developer-facing tooling lives under `code/`. The components are separated by algorithmic responsibility, while PrecPack remains one focused solver rather than a plug-in framework.
-
-## Highlights
-
-| Goal | PrecPack implementation |
-| --- | --- |
-| Unified residual-distance state | BBR records the packed-item set and a residual-distance profile for precedence restrictions that remain active across future bins. The profile is empty for SALBP-I and BPP-P. |
-| Complete branching | Branching uses inclusion-wise maximal feasible item subsets and a forced-empty-bin transition when active restrictions exclude every remaining item. |
-| Cost-ordered lower bounds | Capacity, path, machine, closure, DFF, ordinary BINLB, and conflict-aware BINLB bounds are evaluated in a cost-ordered sequence around collision-safe exact memory. |
-| Proof-safe auxiliary work | Limited preliminary search and optional root-bound strengthening may improve a validated incumbent or certified lower bound, while complete BBR starts with fresh search memory. |
-| Commercial-solver-free exactness | A build without Gurobi retains the complete BBR proof path and remains an exact solver; Gurobi is used only for optional root-bound strengthening and reference tests. |
-| Validated outcomes | Every incumbent is checked against the original instance; limited runs retain a certified lower bound and a validated feasible assignment. |
-| Semantics-driven policy | One fixed policy derives applicable reductions from the declared problem and its separation semantics rather than from benchmark-set names or observed instance statistics. |
-| Portable workflow | CMake definitions and convenience scripts support macOS, Linux, and Windows. |
-| Documented data | The included benchmark sets have format and source documentation. |
+All implementation and developer-facing tooling lives under `code/`. The components are separated by algorithmic responsibility, while **PrecPack** remains one focused solver rather than a plug-in framework.
 
 ## Requirements
 
-The requirements below are derived from the checked-in source and build files, not from the versions installed on a development machine.
+The requirements below follow the checked-in CMake definitions and platform launchers.
 
-| Dependency | Required or supported version | Basis |
+| Dependency | Requirement | Notes |
 | --- | --- | --- |
-| Operating system | 64-bit macOS, Linux, or Windows | Supported by the supplied CMake and launcher workflows. |
-| C++ compiler and standard library | Full C++20 support | PrecPack uses C++20 library features, including `<bit>` operations and associative-container `contains()`. |
-| CMake | 3.20 or newer | Enforced by `cmake_minimum_required(VERSION 3.20)`. |
-| Gurobi Optimizer | Optional; 9.1 through 13.x | Used only for optional root-bound strengthening and reference tests. Versions 9.1.1 and 13.0.2 are currently tested. |
+| Operating system | 64-bit macOS, Linux, or Windows | The supplied build and test workflow covers these platforms. |
+| C++ compiler and standard library | C++20 support | Required features include `<bit>` operations and associative-container `contains()`. |
+| CMake | 3.20 or newer | Enforced by the build definition. |
+| Build tool | A tool supported by the selected CMake generator | For example, Make or Ninja on macOS/Linux, or MSBuild with Visual Studio on Windows. |
+| Launcher shell | Bash on macOS/Linux; Command Prompt on Windows | Required only for the supplied shell or batch wrappers; manual CMake commands are also available. |
+| Gurobi Optimizer | Optional; the CMake finder requests version 9.1 or newer | A compatible C++ library and a valid license are required to use the Gurobi-dependent components. |
 
-PrecPack has no mandatory mathematical-programming-solver dependency. A C++20 compiler and CMake are sufficient to build and run the exact solver and its supplied launchers.
+**PrecPack** has no mandatory mathematical-programming-solver dependency. The compiler, CMake, and a compatible build tool suffice for a commercial-solver-free build. Python is not required by the supplied build or run launchers.
 
-### Optional Gurobi acceleration
+### Optional Root-Bound Strengthening (Gurobi)
+
+Gurobi supports root-bound strengthening and reference tests, not the BBR search itself. Root strengthening may improve the lower bound but is not guaranteed to reduce solve time. A build without Gurobi retains preprocessing, heuristics, complete BBR, and assignment validation.
 
 The CMake option `PRECPACK_GUROBI` selects one of three build modes:
 
 | Value | Behavior |
 | --- | --- |
-| `AUTO` | Default. Enable Gurobi support when a compatible installation is found; otherwise build the commercial-solver-free exact solver. |
-| `OFF` | Exclude all Gurobi-dependent source files and link no Gurobi library. Use this mode for a guaranteed commercial-solver-free binary. |
-| `ON` | Require Gurobi and stop configuration with an error if it cannot be found. |
+| `AUTO` | Default. Enable Gurobi support when a compatible installation is found; otherwise build without it. |
+| `OFF` | Exclude the Gurobi-dependent source files and library dependency. No Gurobi installation or license is needed. |
+| `ON` | Require Gurobi and stop configuration if a suitable installation cannot be found. |
 
-Gurobi 13.0 is not required. PrecPack supports versions 9.1 through 13.x; versions 9.1.1 and 13.0.2 are currently tested. Intermediate releases use the same public API but remain untested on the current development machine, and an older Gurobi C++ library must be binary-compatible with the compiler used to build PrecPack.
+The version floor used by CMake is not a claim that every later release and compiler combination has been tested. The manuscript experiments use Gurobi 13.0.2. The installed Gurobi C++ library must be binary-compatible with the compiler and platform used to build **PrecPack**. Gurobi calls use one thread. For deployment without a commercial license, select `OFF`.
 
-Gurobi is used only for optional root-bound strengthening and reference tests. A build without Gurobi retains the complete BBR proof path and remains an exact solver. When enabled, Gurobi is restricted to one thread. If its license is unavailable at runtime, PrecPack safely skips the optional acceleration and continues with BBR. For predictable deployment on machines without a commercial license, prefer an `OFF` build.
-
-To enable the optional backend, set `GUROBI_HOME` to the platform directory containing Gurobi's `include`, `lib`, and, on Windows, `bin` directories:
+To enable Gurobi support, set `GUROBI_HOME` to the platform directory containing its `include`, `lib`, and, on Windows, `bin` directories:
 
 | Platform | Example `GUROBI_HOME` |
 | --- | --- |
@@ -177,7 +166,7 @@ set "GUROBI_HOME=C:\path\to\gurobi\win64"
 code\scripts\build.bat --gurobi on
 ```
 
-These launchers configure a Release build, compile PrecPack, and run the test suite. Every configuration runs the commercial-solver-free regressions for assignment validation, independent brute-force exactness oracles, DFF and ordinary BINLB bounds, conflict-aware BINLB optima and cutoff certificates, initialization, time-limit handling, and the public interface. When Gurobi is available, root certificates and reference MIP paths are tested in addition. Compilation may use multiple jobs; every solver run is single-threaded.
+These launchers configure a Release build, compile **PrecPack**, and run the test suite. Every configuration runs the commercial-solver-free regressions for assignment validation, independent brute-force exactness oracles, dual-feasible-function bounds and the ordinary-bin-packing lower-bound routine (BINLB), conflict-aware BINLB optima and cutoff certificates, initialization, time-limit handling, and the public interface. When Gurobi is available, root certificates and reference integer-programming models are tested in addition. Compilation may use multiple jobs; every solver run is single-threaded.
 
 The checked-in GitHub Actions workflow performs the Gurobi-free Release build and test suite on macOS, Linux, and Windows. Optional Gurobi builds remain local because they require a separately licensed installation.
 
@@ -219,12 +208,12 @@ The single-instance solver interface is:
 precpack --problem TYPE --instance FILE [options]
 ```
 
-The production command line contains only problem semantics, input locations, resource limits, and the output location.
+The production command line contains only the problem type, input locations, resource limits, and the output location.
 
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `--problem` | `salbp-i`, `bpp-p`, or `bpp-gp` | required |
-| `--instance` | Input ALB-format `.txt` file | required in single-instance mode |
+| `--instance` | Input assembly-line-balancing-format `.txt` file | required in single-instance mode |
 | `--graph` | Labeled `.graph` file | required for single-instance BPP-GP only |
 | `--time-limit` | Wall-clock limit per solve | `300` for single instances and external batches; bundled batches use the schedule below |
 | `--memory-limit-mb` | Global memory cap used by BBR accounting | `24576` |
@@ -243,15 +232,15 @@ When `--time-limit` is omitted, bundled benchmark batches use the same per-insta
 | Problem and bundled benchmark set | Time limit |
 | --- | ---: |
 | SALBP-I: Scholl; Otto `n_0100`, `n_1000` | 350 seconds |
-| SALBP-I: Otto `n_0020`, `n_0050`, `n_0050_permuted` | 1,000 seconds |
+| SALBP-I: Otto `n_0020`, `n_0050`, `n_0050_permuted` | 1000 seconds |
 | SALBP-I: Otto `n_0250`, `n_0500`, `n_0750` | 75 seconds |
-| BPP-P: Scholl; Otto `n_0100` | 1,000 seconds |
+| BPP-P: Scholl; Otto `n_0100` | 1000 seconds |
 | BPP-P: all other bundled Otto sizes | 75 seconds |
 | BPP-GP: both graph sets at every bundled size | 75 seconds |
 
 Batch inputs outside the bundled benchmark directories retain the 300-second product default. Supplying `--time-limit` explicitly overrides the schedule uniformly for every selected instance.
 
-The deterministic seed is fixed to 1, and solver execution is strictly single-threaded. A time- or memory-limited run still writes its validated incumbent and certified lower bound; only `status=OPTIMAL` certifies optimality. Every successful run appends one compact summary row to `SALBP-I_Results.csv`, `BPP-P_Results.csv`, or `BPP-GP_Results.csv`, according to the selected problem. The corresponding `.sol` file below `solutions/` contains only the bin assignment, avoiding duplicated data in large benchmark sets. Routine runs create no log files; if an instance raises an error, the batch launcher appends its path, resource limit, error category, and diagnostic to `errors.log` in the output directory.
+The deterministic seed is fixed to 1, and solver execution is strictly single-threaded. A time- or memory-limited run still writes its validated incumbent and valid lower bound; only `status=OPTIMAL` certifies optimality. Every successful run appends one compact summary row in comma-separated values (CSV) format to `SALBP-I_Results.csv`, `BPP-P_Results.csv`, or `BPP-GP_Results.csv`, according to the selected problem. The corresponding `.sol` file below `solutions/` contains only the bin assignment, avoiding duplicated data in large benchmark sets. Routine runs create no log files; if an instance raises an error, the batch launcher appends its path, resource limit, error category, and diagnostic to `errors.log` in the output directory.
 
 #### Output Files
 
@@ -266,27 +255,27 @@ Each problem-specific results CSV contains one row per run with the following fi
 | `memory_limit_mb` | Configured global BBR memory limit in MiB |
 | `status` | Termination status; only `OPTIMAL` certifies optimality |
 | `opt` | `1` for `OPTIMAL`; `0` otherwise |
-| `lower_bound` | Certified objective lower bound |
+| `lower_bound` | Valid objective lower bound |
 | `upper_bound` | Objective value of the saved assignment |
 | `time_seconds` | Total wall-clock solution time in seconds |
 | `bbr_peak_memory_bytes` | Peak memory tracked by BBR, not whole-process resident memory |
 | `bbr_states_created` | Total BBR states created across all BBR phases |
 
-The problem is identified by the problem-specific output directory and CSV filename. Capacity is stored in the input file, the relative gap is `(upper_bound - lower_bound) / upper_bound`, and the assignment path is deterministically `solutions/<instance-set>/<instance>.sol`; these derived fields are not duplicated in the CSV. CSV fields containing commas, quotes, or line breaks use standard double-quote escaping. PrecPack refuses to append to an existing problem-specific results CSV with a different header, preventing rows with incompatible schemas from being mixed. Use a separate output directory for each problem and independent configuration.
+The problem is identified by the problem-specific output directory and CSV filename. Capacity is stored in the input file, the relative gap is `(upper_bound - lower_bound) / upper_bound`, and the assignment path is deterministically `solutions/<instance-set>/<instance>.sol`; these derived fields are not duplicated in the CSV. CSV fields containing commas, quotes, or line breaks use standard double-quote escaping. **PrecPack** refuses to append to an existing problem-specific results CSV with a different header, preventing rows with incompatible schemas from being mixed. Use a separate output directory for each problem and independent configuration.
 
-Before solving, both single-instance and batch modes check the deterministic `.sol` path. A nonempty file is treated as an existing result and the instance is skipped without comparing time, memory, or Gurobi settings. Use a different output directory for an independent configuration or rerun. PrecPack locks the problem-specific results CSV itself while writing, so concurrent writers are rejected without creating a standalone `.precpack.lock` file.
+Before solving, both single-instance and batch modes check the deterministic `.sol` path. A nonempty file is treated as an existing result and the instance is skipped without comparing time, memory, or Gurobi settings. Use a different output directory for an independent configuration or rerun. **PrecPack** locks the problem-specific results CSV itself while writing, so concurrent writers are rejected without creating a standalone `.precpack.lock` file.
 
 The fixed public BBR interface reports three result statuses:
 
 | Status | Meaning |
 | --- | --- |
-| `OPTIMAL` | The exact proof is complete and the certified lower bound equals the saved upper bound. |
+| `OPTIMAL` | The exact proof is complete and the valid lower bound equals the saved upper bound. |
 | `TIME_LIMIT` | The global wall-clock limit was reached before the proof completed. |
 | `MEMORY_LIMIT` | The global BBR accounted-memory limit was reached before the proof completed. |
 
-Both limited statuses retain a validated feasible assignment and a certified lower bound. They do not certify optimality.
+Both limited statuses retain a validated feasible assignment and a valid lower bound. They do not certify optimality.
 
-Each `.sol` file contains one line for every bin or station position from 1 through the saved upper bound. Generalized separations may require an unused intermediate position, which is written as an empty line after the colon:
+Each `.sol` file contains one line for every bin position from 1 through the saved upper bound. Generalized precedence constraints may require an unused intermediate position, which is written as an empty line after the colon:
 
 ```text
 Bin 1: 1 4 7
@@ -294,7 +283,7 @@ Bin 2:
 Bin 3: 2 3 5 6
 ```
 
-Bin numbers and item numbers are one-based, and item numbers refer to the original input order. Weights, loads, bounds, status, resource limits, and runtime statistics are omitted because they can be recovered from the input files and the matching CSV row.
+Bin numbers and item numbers are one-based, and item numbers refer to the original input order. Item weights, total bin weights, bounds, status, resource limits, and runtime statistics are omitted because they can be recovered from the input files and the matching CSV row.
 
 Examples from the repository root:
 
@@ -321,7 +310,7 @@ Use `build\Release\precpack.exe` for a standard Windows build.
 
 Batch selection and recovery are implemented by the same compiled `precpack` executable. The platform launchers execute instances sequentially and skip an instance whenever its deterministically named `.sol` file already exists and is nonempty. Resource settings are intentionally not compared during recovery, so independent configurations must use separate output directories.
 
-Use `./code/scripts/run_batch.sh` on macOS or Linux and `code\scripts\run_batch.bat` on Windows Command Prompt. Both launch the same C++ batch implementation with the same arguments and bundled benchmark schedule. Relative `--input`, `--graph-dir`, and `--output-dir` paths are resolved from the directory in which the launcher is called; the default benchmark data remain located from the repository root. PrecPack prevents two processes from writing the same output directory concurrently.
+Use `./code/scripts/run_batch.sh` on macOS or Linux and `code\scripts\run_batch.bat` on Windows Command Prompt. Both launch the same C++ batch implementation with the same arguments and bundled benchmark schedule. Relative `--input`, `--graph-dir`, and `--output-dir` paths are resolved from the directory in which the launcher is called; the default benchmark data remain located from the repository root. **PrecPack** prevents two processes from writing the same output directory concurrently.
 
 Run all bundled instances for one problem by specifying only its problem type. On macOS or Linux:
 
@@ -359,7 +348,7 @@ Run the Scholl SALBP-I benchmark set:
   --output-dir results/salbp-i-scholl
 ```
 
-Run one BPP-GP separation family and size:
+Run one BPP-GP benchmark set and instance size:
 
 ```bash
 ./code/scripts/run_batch.sh \
@@ -372,7 +361,7 @@ A complete batch can take a long time; use a benchmark subset or an instance-siz
 
 ## Benchmark Instances
 
-PrecPack includes the Otto and Scholl benchmark instance sets together with two BPP-GP labeled-graph sets under [`data/`](data/). See [`data/README.md`](data/README.md) for the directory structure, exact instance counts, file formats, pairing rules, sources, and acknowledgements.
+**PrecPack** includes the Otto and Scholl benchmark instance sets together with two BPP-GP labeled-graph sets under [`data/`](data/). See [`data/README.md`](data/README.md) for the directory structure, exact instance counts, file formats, pairing rules, sources, and acknowledgements.
 
 ## Contact
 
@@ -380,7 +369,7 @@ If you have any questions or suggestions, or if you encounter an issue, please f
 
 ## License
 
-PrecPack source code is released under the [MIT License](LICENSE).
+**PrecPack** source code is released under the [MIT License](LICENSE).
 
 Copyright (c) 2026 Sunkanghong Wang.
 
