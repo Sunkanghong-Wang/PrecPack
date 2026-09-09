@@ -4,13 +4,13 @@ This directory contains the shared item instances and labeled graphs distributed
 
 ## Mathematical interpretation
 
-Each item or task $i$ has a positive size $w_i$ and is assigned to a zero-based bin or station position $b_i$. Every position has capacity $C$. For each precedence arc $(i,j,t_{ij})$, feasibility requires
+Each item or task $i$ has a positive size $w_i$ and is assigned to a bin or station with a one-based index $b_i$. Every position has capacity $C$. For each precedence arc $(i,j,t_{ij})$, feasibility requires
 
 $$
 b_j-b_i \ge t_{ij}.
 $$
 
-PrecPack minimizes the number of positions from position 0 through the last used position. The three supported problems differ only in their precedence weights:
+PrecPack minimizes the number of positions from position 1 through the last used position. The three supported problems differ only in their precedence weights:
 
 | Problem | Precedence weights |
 | --- | --- |
