@@ -40,8 +40,8 @@ Below is the provisional BibTeX for citing the IJOC archival repository.
 
 ```bibtex
 @misc{Wang2026PrecPack,
-  author    = {Wang, Sunkanghong and You, Zhengzhong and Baldacci, Roberto and
-               Mo, Baichuan and Wei, Lijun and Xu, Zhou},
+  author    = {Wang, Sunkanghong and You, Zhengzhong Ricky and Baldacci, Roberto and
+               Mo, Baichuan and Qin, Hu and Wei, Lijun and Xu, Zhou},
   publisher = {INFORMS Journal on Computing},
   title     = {{PrecPack: An Efficient Open-Source Exact Solver for Bin Packing
                 with Generalized Precedence Constraints}},
