@@ -77,7 +77,7 @@ PrecPack/
 │   ├── scripts/                # Build/run tools and regression tests
 │   └── src/
 │       ├── bbr.cpp             # Exact BBR search
-│       ├── initial_bounds.cpp  # Preprocessing, bounds, and incumbents
+│       ├── initial_bounds.cpp  # Preprocessing, bounds, and primal heuristics
 │       ├── root_column_generation.cpp  # Position-free root bound
 │       ├── bin_packing_bound.cpp       # Ordinary bin-packing bound
 │       ├── conflict_bin_packing.cpp    # Conflict-aware bin-packing bound
@@ -114,7 +114,7 @@ The requirements below follow the checked-in CMake definitions and platform laun
 
 ### Optional Root-Bound Strengthening (Gurobi)
 
-Gurobi supports root-bound strengthening and reference tests, not the BBR search itself. Root strengthening may improve the lower bound but is not guaranteed to reduce solve time. A build without Gurobi retains preprocessing, heuristics, complete BBR, and assignment validation.
+Gurobi supports root-bound strengthening and reference tests, not the BBR search itself. The root lower bound is computed from column-generation dual values using fixed-point arithmetic, ensuring numerical validity for pruning and optimality decisions. Root strengthening may improve the lower bound but is not guaranteed to reduce solve time. A build without Gurobi retains preprocessing, primal heuristics, complete BBR, and assignment validation.
 
 The CMake option `PRECPACK_GUROBI` selects one of three build modes:
 
