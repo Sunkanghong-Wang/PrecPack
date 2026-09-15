@@ -99,8 +99,6 @@ All implementation and developer-facing tooling lives under `code/`. The compone
 
 ## Requirements
 
-The requirements below follow the checked-in CMake definitions and platform launchers.
-
 | Dependency | Requirement | Notes |
 | --- | --- | --- |
 | Operating system | 64-bit macOS, Linux, or Windows | The supplied build and test workflow covers these platforms. |
@@ -152,7 +150,7 @@ Windows Command Prompt:
 code\scripts\build.bat --gurobi off
 ```
 
-The macOS, Linux, and Windows build launchers call CMake directly. They print the CMake configuration, compilation, and test phases, and report a specific error when CMake is unavailable or a phase fails. On macOS, `build.sh` also detects CMake installed with CMake.app, Homebrew, MacPorts, or CLion when it is not on `PATH`. Set `CMAKE_BIN` to an executable path to override automatic detection. None of the build or run launchers requires Python.
+The macOS, Linux, and Windows build launchers call CMake directly. On macOS, `build.sh` also detects CMake installed with CMake.app, Homebrew, MacPorts, or CLion when it is not on `PATH`. Set `CMAKE_BIN` to an executable path to override automatic detection. None of the build or run launchers requires Python.
 
 Omit `--gurobi off` to use the default `AUTO` detection. To require the optional Gurobi backend, set `GUROBI_HOME` and use `--gurobi on`:
 
